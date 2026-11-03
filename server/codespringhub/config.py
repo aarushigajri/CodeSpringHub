@@ -16,6 +16,9 @@ KNOWLEDGE_DIR = HUB_HOME / "knowledge"
 VAR_DIR = HUB_HOME / "var"
 DB_PATH = VAR_DIR / "hub.db"
 
+# The folder picker and dataset registration are limited to these roots.
+BROWSE_ROOTS = [r for r in os.environ.get("CODESPRINGHUB_BROWSE_ROOTS", "/grid").split(":") if r]
+
 # Output limits: the most any single tool call may send back to the model.
 MAX_OUTPUT_CHARS = 20_000
 MAX_TABLE_ROWS = 50

@@ -1,8 +1,37 @@
 # CodeSpringHub.v1
 
 A governed connection between Claude and Cold Spring Harbor Laboratory lab knowledge and data,
-built by the Bioinformatics Shared Resource (BSR). This is **Phase 0**: it runs locally on the
-cluster inside Claude Code, as the logged-in user, with BSR as the first lab.
+built by the Bioinformatics Shared Resource (BSR). It runs on the cluster as the logged-in user,
+with BSR as the first lab. There are two ways in:
+
+- **The portal**, a web page where anyone can edit lab context, add datasets and check what Claude
+  sees, with no files or commands involved.
+- **The MCP server**, which Claude connects to (Claude Code today, Claude Enterprise in Phase 2).
+
+## Start the portal (the easy way)
+
+On the cluster:
+```bash
+/grid/bsr/data/data/bsr_readable_data/CodeSpringHub/portal.sh
+```
+It prints two things:
+1. an `ssh -N -L …` command. Run it **on your laptop** and leave it open.
+2. a private link (`http://localhost:8780/#token=…`). Open it in your laptop's browser.
+
+The link is personal: anyone holding it can use the portal as you, so don't share it.
+`./portal.sh --new-link` makes the old link stop working. Stop the portal with Ctrl+C.
+
+In the portal:
+- **Lab page:** lab name, projects, and the context page Claude reads first (editor with live preview).
+- **Documents:** guidance, protocols, notes and grant aims. "New document" gives you a template.
+- **Datasets:** "Add a dataset" lets you click through folders, describe the data, choose how much
+  Claude may see, and then shows exactly what Claude gets.
+- **BSR workflows:** the shared workflow list (only BSR can edit it).
+- **Inbox:** Claude's suggested context edits and requests sent to BSR.
+- **Try it as Claude:** ask the Hub what Claude would ask, and see the answer it would get.
+- **Activity:** every Claude request and portal edit.
+
+Every save is a local git commit with your name (**History** tab), so nothing is lost.
 
 ## What's here
 
@@ -15,20 +44,27 @@ knowledge/            ← the human-edited content (you edit this)
     datasets.yaml       registered pointers to data on /grid/ (never copied)
     guidance/*.md       BSR guidance documents
     protocols/*.md      protocols / SOPs
-server/codespringhub/ ← the MCP server
-  server.py             the tools Claude can call (start reading here)
-  permissions.py        who is asking, and what they may see
+server/codespringhub/ ← the Python backend
+  server.py             MCP server: the tools Claude can call
+  hub.py                read operations shared by the MCP server and the portal
+  editing.py            portal-only changes: validate, write, git-commit, audit
+  web.py                portal web API (/api) + serves the built web app
+  identity.py           who is using the portal (private link now, CSHL SSO later)
+  permissions.py        who is asking, and what they may see or change
   knowledge.py          reads the knowledge/ folder
   inspect_data.py       summarizes data files without sending raw data
   store.py              search index, audit log, review tickets, suggestions (var/hub.db)
   cli.py                the `hub` admin command
-tests/                ← end-to-end tests using a real MCP client
+portal/               ← the web app (React + TypeScript; built automatically by portal.sh)
+portal.sh             ← start the portal
+tests/                ← end-to-end tests (MCP client + portal API)
 demo_data/            ← SYNTHETIC demo dataset (scripts/make_demo_data.py)
 ```
 
 ## Editing context: how it works
 
-All context is plain text. To add something BSR-related:
+The easiest way is the portal (above). Underneath, everything is plain text, so you can also
+edit the files directly:
 
 1. **Small addition:** open `knowledge/bsr/context.md`, add a line or a section, and save.
 2. **New guidance or protocol:** copy `knowledge/bsr/guidance/_TEMPLATE.md` to a new name, such as
@@ -95,8 +131,9 @@ npx @modelcontextprotocol/inspector ./env/bin/codespringhub
 
 ## Roadmap
 
-- **Phase 0 (this):** local stdio server, BSR knowledge, file-based registry, tests.
-- **Phase 1:** web portal for registering data and editing context; BAM/VCF/h5ad inspectors.
+- **Phase 0 (done):** local stdio server, BSR knowledge, file-based registry, tests.
+- **Phase 1 (in progress):** web portal for editing context, registering data and testing (done);
+  BAM/VCF/h5ad inspectors (next).
 - **Phase 2:** HTTPS service with CSHL SSO (OAuth), per-user file access on a shared host, PostgreSQL,
   added as a custom connector in Claude Enterprise.
 - **Phase 3:** the three pilot labs, BSR review loop, usage dashboard.

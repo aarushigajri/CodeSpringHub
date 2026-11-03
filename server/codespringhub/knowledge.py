@@ -53,6 +53,7 @@ class Document:
     category: str  # "context" for context.md, otherwise the subfolder name
     title: str
     path: Path
+    rel_path: str  # path inside the lab folder, e.g. "guidance/scrna-qc.md"
 
 
 @dataclass
@@ -114,7 +115,8 @@ def load_documents(lab: Lab) -> dict[str, Document]:
             continue
         category = "context" if rel == Path("context.md") else rel.parts[0] if len(rel.parts) > 1 else "notes"
         doc_id = f"doc:{lab.id}/{rel.with_suffix('').as_posix()}"
-        docs[doc_id] = Document(id=doc_id, lab_id=lab.id, category=category, title=_title_of(md), path=md)
+        docs[doc_id] = Document(id=doc_id, lab_id=lab.id, category=category, title=_title_of(md),
+                                path=md, rel_path=rel.as_posix())
     return docs
 
 

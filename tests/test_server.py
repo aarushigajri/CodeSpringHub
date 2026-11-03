@@ -1,51 +1,14 @@
-"""End-to-end tests: a real MCP client talks to the server in-process.
-
-Each test gets its own copy of the knowledge folder in a temp dir, plus a second lab
-("otherlab") whose Unix group the test user is not in.
-"""
+"""End-to-end tests: a real MCP client talks to the server in-process (setup in conftest.py)."""
 
 import asyncio
 import json
-import os
-import shutil
-from pathlib import Path
 
 import pytest
 from mcp import Client
 
-from codespringhub import config, permissions
+from codespringhub import config
+from codespringhub.permissions import acting_as
 from codespringhub.server import mcp
-
-REPO = Path(__file__).resolve().parents[1]
-USER = permissions.current_user()
-MY_GROUP = sorted(permissions.user_groups(USER))[0]
-
-
-@pytest.fixture(autouse=True)
-def hub(tmp_path, monkeypatch):
-    kdir = tmp_path / "knowledge"
-    shutil.copytree(REPO / "knowledge", kdir)
-    # Make the BSR lab accessible to whoever runs the tests.
-    lab_yaml = kdir / "bsr" / "lab.yaml"
-    lab_yaml.write_text(lab_yaml.read_text().replace("unix_group: bioinformatics", f"unix_group: {MY_GROUP}"))
-
-    data = tmp_path / "data"
-    shutil.copytree(REPO / "demo_data" / "demo-rnaseq", data / "demo-rnaseq")
-    (tmp_path / "secret.csv").write_text("a,b\n1,2\n")
-    os.symlink(tmp_path / "secret.csv", data / "demo-rnaseq" / "escape.csv")
-    ds_yaml = kdir / "bsr" / "datasets.yaml"
-    ds_yaml.write_text(ds_yaml.read_text().replace(str(REPO / "demo_data"), str(data)))
-
-    other = kdir / "otherlab"
-    other.mkdir()
-    (other / "lab.yaml").write_text("name: Other Lab\nunix_group: no_such_group_codespringhub\n")
-    (other / "context.md").write_text("# Other lab\n\nconfidential zebrafish secrets\n")
-
-    monkeypatch.setattr(config, "KNOWLEDGE_DIR", kdir)
-    monkeypatch.setattr(config, "VAR_DIR", tmp_path / "var")
-    monkeypatch.setattr(config, "DB_PATH", tmp_path / "var" / "hub.db")
-    return tmp_path
-
 
 def call(tool, **args):
     async def go():
@@ -76,7 +39,7 @@ def test_only_member_labs_are_visible():
 
 
 def test_context_edit_is_live_immediately(hub):
-    ctx = hub / "knowledge" / "bsr" / "context.md"
+    ctx = hub / "hub" / "knowledge" / "bsr" / "context.md"
     assert "Slurm" in call("get_lab_context", lab_id="bsr")
     assert call("search_knowledge", query="axolotl") == []
 
@@ -88,7 +51,7 @@ def test_context_edit_is_live_immediately(hub):
 
 
 def test_new_guidance_file_is_found_and_templates_are_hidden(hub):
-    (hub / "knowledge" / "bsr" / "guidance" / "scrna-qc.md").write_text(
+    (hub / "hub" / "knowledge" / "bsr" / "guidance" / "scrna-qc.md").write_text(
         "# scRNA-seq QC at BSR\n\nFilter cells with mitochondrial fraction above the agreed threshold.\n"
     )
     hits = call("search_knowledge", query="mitochondrial")
@@ -154,3 +117,13 @@ def test_new_state_files_are_private():
 
 def test_workflows_filter():
     assert [w["id"] for w in call("list_workflows", assay="RNA-seq")] == ["nf-core-rnaseq"]
+
+
+def test_acting_user_reaches_the_tools():
+    # The portal and the future HTTPS endpoint set the user per request; the tools must see it.
+    async def go():
+        with acting_as("root"):
+            async with Client(mcp) as c:
+                return await c.call_tool("whoami", {})
+
+    assert json.loads(asyncio.run(go()).content[0].text)["user"] == "root"

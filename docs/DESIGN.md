@@ -1,6 +1,6 @@
 # CodeSpringHub.v1: Design
 
-*Bioinformatics Shared Resource (BSR), Cold Spring Harbor Laboratory. Status: Phase 0 built (November 2026).
+*Bioinformatics Shared Resource (BSR), Cold Spring Harbor Laboratory. Status: Phase 0 built; Phase 1 portal built (November 2026).
 This document describes what is built today and how the later phases are meant to extend it.*
 
 ---
@@ -65,7 +65,27 @@ The hierarchy follows the CodeSpringSuite deck: **Lab → Project → Resource (
 - **The files are the source of truth.** Knowledge is never stored only in the database. The
   database holds machine state that can always be rebuilt or is append-only.
 
-### 3.2 Target (Phase 2+)
+### 3.2 Phase 1: the portal (built)
+
+```
+ Lab member / BSR ── browser on laptop ──ssh tunnel──► codespringhub-portal (on the cluster, as that user)
+                     private link (#token=…)            │  /api  → hub.py (read) + editing.py (write)
+                                                        │  /     → built React app
+                                                        └─ /api/tools/* → the same MCP server, in-process
+```
+
+- **One codebase, two front doors.** The MCP server (`server.py`) and the portal API (`web.py`)
+  both call the same service layer: `hub.py` for reads and `editing.py` for writes. Every service
+  function takes the acting `user` explicitly, so permissions are identical however a request arrives.
+- **Built for HTTPS.** The only part tied to "local" is `identity.py`, which turns a request's bearer
+  token into a username. Today that token is a private link created at start-up (mode 600 in `var/`).
+  In Phase 2 it becomes a CSHL SSO token, and nothing downstream changes. The acting user reaches the
+  MCP tools through a context variable (`permissions.acting_as`), which a test verifies. The same
+  mechanism will carry the SSO user into the HTTPS MCP endpoint.
+- **"Try it as Claude"** calls the real MCP tools through an in-process MCP client as the portal user,
+  so what the portal shows is exactly what Claude would receive.
+
+### 3.3 Target (Phase 2+)
 
 ```
  Researcher ─► Claude Enterprise ─HTTPS + OAuth─► CSHL reverse proxy ─► CodeSpringHub service
@@ -78,18 +98,25 @@ The hierarchy follows the CodeSpringSuite deck: **Lab → Project → Resource (
 
 Section 10 covers what changes between the two.
 
-### 3.3 Code layout
+### 3.4 Code layout
 
 | File | Responsibility |
 |---|---|
-| `server/codespringhub/server.py` | MCP server, Claude instructions, the 12 tools, 1 prompt, the audit/limit wrapper |
-| `server/codespringhub/permissions.py` | Current user, Unix-group lookup, lab access check, safe path resolution |
+| `server/codespringhub/server.py` | MCP server, Claude instructions, the 12 tools (thin wrappers over `hub.py`), 1 prompt, the audit/limit wrapper |
+| `server/codespringhub/hub.py` | Read operations shared by MCP and portal; each takes `user` and checks permissions |
+| `server/codespringhub/editing.py` | Portal-only writes: validation, atomic file writes, per-save git commit, audit; folder browser; inbox |
+| `server/codespringhub/web.py` | Portal API under `/api`, security headers, serves `portal/dist` |
+| `server/codespringhub/identity.py` | Bearer token → username. `local` (private link) now, `oidc` (CSHL SSO) placeholder |
+| `server/codespringhub/errors.py` | `HubError` / `NotFound` / `Forbidden`: plain-language messages for both Claude and the portal |
+| `server/codespringhub/permissions.py` | Acting user, Unix-group lookup, view/edit/BSR checks, safe path resolution |
 | `server/codespringhub/knowledge.py` | Reads `knowledge/` into Lab / Project / Dataset / Document objects |
 | `server/codespringhub/inspect_data.py` | File summaries (table, FASTQ, text) and sandboxed SQL |
 | `server/codespringhub/store.py` | SQLite: full-text index, audit, reviews, suggestions |
 | `server/codespringhub/config.py` | Paths and output limits |
 | `server/codespringhub/cli.py` | `hub` admin command |
-| `tests/test_server.py` | End-to-end tests through a real MCP client |
+| `portal/src/` | React + TypeScript web app (pages: Home, Lab page, Documents, Datasets, Workflows, Inbox, Try it, Activity) |
+| `portal.sh` | Builds the web app if needed and starts the portal |
+| `tests/test_server.py`, `tests/test_portal.py` | End-to-end tests through a real MCP client and the portal API (33 tests) |
 
 ---
 
@@ -203,9 +230,10 @@ This is a core requirement: lab members and BSR must be able to add and correct 
 
 | Actor | Can do | Mechanism |
 |---|---|---|
-| Lab member / BSR | Add, edit or remove context, documents, datasets | Edit the files (Phase 0), portal editor (Phase 1) |
+| Lab member | Edit their lab's details, context, documents and datasets | Portal (or the files directly) |
+| BSR staff | All of the above for BSR, plus the shared workflow registry and review tickets | Portal |
 | Claude | **Suggest** a change only | `suggest_context_edit` → `suggestions` table |
-| Reviewer | Accept or reject suggestions | `hub suggestions` to view, then edit the file |
+| Reviewer | Apply or dismiss suggestions | Portal Inbox: "Open document to apply" shows the suggestion beside the editor |
 
 Claude can never write to `knowledge/`. That keeps a person responsible for everything the AI is told
 is "lab knowledge".
@@ -216,9 +244,17 @@ is "lab knowledge".
   *This relies on the model following instructions; it is not enforced in code.*
 - Git provides history and attribution (`git log -p knowledge/`).
 
-**Phase 1 portal:** an editor over the same files, plus a review step: lab edits go live immediately,
-and changes to BSR guidance need BSR approval. Saving writes the file and makes a git commit as the
-editing user.
+**The portal (Phase 1, built)** edits the same files. Each save:
+1. checks the user can edit that lab (member of its group, and the lab folder is writable);
+2. validates input with plain-language errors (document names, dataset paths under `/grid/` and
+   readable by the user, project IDs, workflow statuses);
+3. writes the file atomically, keeping its permissions;
+4. makes a **local git commit for just that file** with the user as author (never pushed), which
+   feeds the History tab and makes any change reversible;
+5. writes a `portal:*` row to the audit log.
+
+YAML files written by the portal lose hand-written comments; a header line marks them as managed.
+*Not yet built:* a BSR approval step for changes to BSR guidance (today any BSR member can edit it).
 
 ---
 
@@ -281,6 +317,10 @@ cluster, and Claude gets only what was deliberately registered.
 | Claude rewrites lab knowledge | No write tool; suggestions are queued for a person | ✓ |
 | Unauthenticated network access | HTTP mode refused without `--dev-no-auth` and bound to localhost | – |
 | No record of what happened | Every call audited, including failures | ✓ |
+| Another cluster user drives your portal | Portal binds to localhost only, **and** every API call needs the private link token (constant-time compare). Other users on the node can reach the port but not use it | ✓ |
+| Portal writes outside a lab | Document paths must be `context.md` or `<category>/<slug>.md`; dataset paths must be under `BROWSE_ROOTS`, exist, be readable, and not be inside the Hub itself | ✓ |
+| Folder browser used to explore the cluster | Limited to `BROWSE_ROOTS` (`/grid`) and to folders the user can already open | ✓ |
+| Script injection through Markdown | Previews are sanitized with DOMPurify; `X-Frame-Options: DENY`, `nosniff`, no referrer | – |
 
 **What leaves CSHL:** whatever a tool returns is sent to Anthropic as part of the conversation:
 summaries, previews, query rows and document text. Raw files are not transferred, but returned
@@ -308,14 +348,19 @@ These are deliberate simplifications, or gaps found while writing this document:
    `unix_group`. **Git does not store these permissions**, so a fresh clone must be re-locked; run
    `hub check`. In Phase 0 every BSR member who runs the server writes to the same audit log, so it
    is readable by BSR but not tamper-proof. Phase 2 fixes that with a single service account.
-2. **Identity is "whoever started the process".** That is correct for stdio, but it cannot serve
-   several users from one shared service (see Phase 2).
-3. **Keyword search only** (SQLite FTS5). It doesn't understand synonyms or meaning; pgvector is planned.
-4. **Suggestions have no "apply" command** yet. A person reads them and edits the file by hand.
-5. **No BAM/VCF/h5ad inspectors** yet (planned with pysam / anndata).
-6. **`query_table` loads up to 500 MB into memory** for each call.
-7. **The `TODO` convention depends on the model following instructions.**
-8. **Workflow statuses are placeholders.** All five are `candidate` with version `TODO` until BSR reviews them.
+2. **Identity is "whoever started the process"** for stdio and the local portal. The code is ready
+   for per-request users (`acting_as`), but file checks (`os.access`) still test the process user,
+   which is only correct when the process *is* the user (see Phase 2).
+3. **Reaching the portal needs an SSH tunnel.** That's fine for BSR staff, but too technical for most
+   researchers. HTTPS hosting (Phase 2) removes it; until then BSR runs the portal for pilot labs or
+   sits with them. Display names come from the cluster account (`gecos`), which may be just a surname.
+4. **Keyword search only** (SQLite FTS5). It doesn't understand synonyms or meaning; pgvector is planned.
+5. **Applying a suggestion is manual:** the Inbox opens the document beside the suggestion, a person
+   edits and saves, then marks it applied.
+6. **No BAM/VCF/h5ad inspectors** yet (planned with pysam / anndata).
+7. **`query_table` loads up to 500 MB into memory** for each call.
+8. **The `TODO` convention depends on the model following instructions.**
+9. **Workflow statuses are placeholders.** All five are `candidate` with version `TODO` until BSR reviews them.
 
 ---
 
@@ -323,8 +368,10 @@ These are deliberate simplifications, or gaps found while writing this document:
 
 | Concern | Phase 0 | Phase 2 |
 |---|---|---|
-| Transport | stdio, one process per user | Streamable HTTP, one service |
-| Identity | process owner | OAuth 2.1 token from CSHL SSO → CSHL username (MCP SDK `token_verifier` / `AuthSettings`) |
+| Transport | stdio, one process per user | Streamable HTTP, one service (portal + MCP together) |
+| Identity | process owner; portal: private link | OAuth 2.1 / OIDC token from CSHL SSO → CSHL username: implement `OIDCAuth` in `identity.py` for the portal, and the MCP SDK's `token_verifier` for `/mcp`; both set `acting_as(user)` |
+| Portal access | SSH tunnel + private link | `https://codespringhub.cshl.edu` (or similar), SSO login, no tunnel |
+| MCP endpoint | stdio | mounted on the same app at `/mcp` |
 | Group lookup | `getgrouplist` | same, via the host's LDAP/NSS |
 | File permission check | `os.access` as the user | **open decision:** (a) a small helper run as the user through a narrowly scoped `sudo` rule, which is strongest; or (b) the service account's read access plus an explicit POSIX ACL check for the user, which is simpler but weaker |
 | Database | SQLite | PostgreSQL (+ pgvector for meaning-based search) |

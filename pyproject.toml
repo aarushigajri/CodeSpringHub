@@ -3,11 +3,12 @@ name = "codespringhub"
 version = "0.1.0"
 description = "CodeSpringHub.v1: MCP server connecting Claude to CSHL lab context and registered data"
 requires-python = ">=3.12"
-dependencies = ["mcp==2.3.0", "duckdb", "pyyaml"]
+dependencies = ["mcp==2.3.0", "duckdb", "pyyaml", "fastapi", "uvicorn", "httpx"]
 
 [project.scripts]
 codespringhub = "codespringhub.server:main"
 hub = "codespringhub.cli:main"
+codespringhub-portal = "codespringhub.web:main"
 
 [build-system]
 requires = ["setuptools>=68"]

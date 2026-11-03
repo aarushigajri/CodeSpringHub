@@ -1,0 +1,291 @@
+"""The CodeSpringHub portal: a JSON API under /api plus the built React app at /.
+
+All endpoints take the user from identity.py and call the same service layer as the
+MCP server (hub.py for reading, editing.py for changes), so permissions are identical.
+
+Phase 2 note: the HTTPS MCP endpoint for Claude Enterprise will be mounted on this same
+app (at /mcp), protected by the same SSO token check.
+"""
+
+import argparse
+import socket
+from pathlib import Path
+
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from mcp import Client
+from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import BaseModel
+
+from . import editing, hub, knowledge
+from .errors import HubError
+from .identity import get_auth
+from .permissions import acting_as, display_name, is_bsr, require_lab
+from .server import mcp
+
+DIST = Path(__file__).resolve().parents[2] / "portal" / "dist"
+
+
+def create_app(auth=None) -> FastAPI:
+    auth = auth or get_auth()
+    app = FastAPI(title="CodeSpringHub portal", docs_url=None, redoc_url=None, openapi_url=None)
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
+
+    @app.exception_handler(ToolError)
+    async def tool_error(_, exc: ToolError):
+        status = exc.status if isinstance(exc, HubError) else 400
+        return JSONResponse({"detail": str(exc)}, status_code=status)
+
+    def current(request: Request) -> str:
+        header = request.headers.get("authorization", "")
+        token = header[7:] if header.lower().startswith("bearer ") else None
+        user = auth.user_for(token)
+        if user is None:
+            raise _Unauthorized()
+        return user
+
+    @app.exception_handler(_Unauthorized)
+    async def unauthorized(_, __):
+        return JSONResponse(
+            {"detail": "This portal link is missing or out of date. Open the link printed when the portal started."},
+            status_code=401,
+        )
+
+    U = Depends(current)
+
+    # ---- who am I / labs ----------------------------------------------------
+
+    @app.get("/api/me")
+    def me(user: str = U):
+        return {"user": user, "name": display_name(user), "is_bsr": is_bsr(user), "auth": auth.name,
+                "categories": editing.CATEGORIES, "assays": editing.ASSAYS}
+
+    @app.get("/api/labs")
+    def labs(user: str = U):
+        return hub.list_labs(user)
+
+    @app.get("/api/labs/{lab_id}")
+    def lab_detail(lab_id: str, user: str = U):
+        lab = require_lab(user, knowledge.load_labs(), lab_id)
+        info = next(l for l in hub.list_labs(user) if l["lab_id"] == lab_id)
+        return info | {"unix_group": lab.unix_group, "documents_list": hub.document_index(lab)}
+
+    class LabIn(BaseModel):
+        name: str
+        description: str = ""
+        projects: list[dict] = []
+
+    @app.put("/api/labs/{lab_id}")
+    def lab_update(lab_id: str, body: LabIn, user: str = U):
+        editing.update_lab(user, lab_id, body.name, body.description, body.projects)
+        return {"ok": True}
+
+    @app.get("/api/labs/{lab_id}/history")
+    def lab_history(lab_id: str, path: str | None = None, user: str = U):
+        return editing.history(user, lab_id, path)
+
+    # ---- documents ----------------------------------------------------------
+
+    class DocIn(BaseModel):
+        text: str
+
+    class NewDoc(BaseModel):
+        category: str
+        title: str
+
+    @app.get("/api/labs/{lab_id}/docs/{rel_path:path}")
+    def doc_get(lab_id: str, rel_path: str, user: str = U):
+        return editing.read_document_file(user, lab_id, rel_path)
+
+    @app.put("/api/labs/{lab_id}/docs/{rel_path:path}")
+    def doc_put(lab_id: str, rel_path: str, body: DocIn, user: str = U):
+        editing.save_document(user, lab_id, rel_path, body.text)
+        return {"ok": True}
+
+    @app.post("/api/labs/{lab_id}/docs")
+    def doc_new(lab_id: str, body: NewDoc, user: str = U):
+        return {"rel_path": editing.create_document(user, lab_id, body.category, body.title)}
+
+    @app.delete("/api/labs/{lab_id}/docs/{rel_path:path}")
+    def doc_delete(lab_id: str, rel_path: str, user: str = U):
+        editing.delete_document(user, lab_id, rel_path)
+        return {"ok": True}
+
+    # ---- datasets -----------------------------------------------------------
+
+    @app.get("/api/labs/{lab_id}/datasets")
+    def datasets(lab_id: str, user: str = U):
+        # Lab editors see paths (they registered them); Claude never does.
+        lab = require_lab(user, knowledge.load_labs(), lab_id)
+        return [hub.public_dataset(d) | {"short_id": d.id.split("/", 1)[1], "path": d.path}
+                for d in knowledge.load_datasets(lab).values()]
+
+    class DatasetIn(BaseModel):
+        id: str | None = None
+        title: str
+        path: str
+        project: str | None = None
+        assay: str = ""
+        description: str = ""
+        sensitivity: str = "standard"
+
+    @app.post("/api/labs/{lab_id}/datasets")
+    def dataset_new(lab_id: str, body: DatasetIn, user: str = U):
+        return {"id": editing.save_dataset(user, lab_id, body.model_dump())}
+
+    @app.put("/api/labs/{lab_id}/datasets/{ds_id}")
+    def dataset_put(lab_id: str, ds_id: str, body: DatasetIn, user: str = U):
+        return {"id": editing.save_dataset(user, lab_id, body.model_dump(), original_id=ds_id)}
+
+    @app.delete("/api/labs/{lab_id}/datasets/{ds_id}")
+    def dataset_delete(lab_id: str, ds_id: str, user: str = U):
+        editing.delete_dataset(user, lab_id, ds_id)
+        return {"ok": True}
+
+    @app.get("/api/browse")
+    def browse(path: str | None = None, user: str = U):
+        return editing.browse(user, path)
+
+    @app.get("/api/check-path")
+    def check_path(path: str, user: str = U):
+        return editing.check_dataset_path(user, path)
+
+    # ---- workflows ----------------------------------------------------------
+
+    class WorkflowIn(BaseModel):
+        id: str | None = None
+        name: str
+        assays: list[str]
+        status: str
+        version: str = ""
+        url: str = ""
+        summary: str = ""
+
+    @app.get("/api/workflows")
+    def workflows(user: str = U):
+        return hub.list_workflows()
+
+    @app.post("/api/workflows")
+    def workflow_new(body: WorkflowIn, user: str = U):
+        return {"id": editing.save_workflow(user, body.model_dump())}
+
+    @app.put("/api/workflows/{wf_id}")
+    def workflow_put(wf_id: str, body: WorkflowIn, user: str = U):
+        return {"id": editing.save_workflow(user, body.model_dump(), original_id=wf_id)}
+
+    @app.delete("/api/workflows/{wf_id}")
+    def workflow_delete(wf_id: str, user: str = U):
+        editing.delete_workflow(user, wf_id)
+        return {"ok": True}
+
+    # ---- inbox and activity -------------------------------------------------
+
+    class StatusIn(BaseModel):
+        status: str
+
+    @app.get("/api/inbox")
+    def inbox(user: str = U):
+        return editing.inbox(user)
+
+    @app.post("/api/suggestions/{sid}")
+    def suggestion_status(sid: int, body: StatusIn, user: str = U):
+        editing.set_suggestion_status(user, sid, body.status)
+        return {"ok": True}
+
+    @app.post("/api/reviews/{rid}")
+    def review_status(rid: int, body: StatusIn, user: str = U):
+        editing.set_review_status(user, rid, body.status)
+        return {"ok": True}
+
+    @app.get("/api/activity")
+    def activity(user: str = U):
+        return editing.activity(user)
+
+    # ---- "Try it": call MCP tools exactly as Claude would --------------------
+
+    @app.get("/api/tools")
+    async def tools(user: str = U):
+        with acting_as(user):
+            async with Client(mcp) as c:
+                listed = await c.list_tools()
+        return [{"name": t.name, "description": t.description, "schema": t.input_schema} for t in listed.tools]
+
+    class ToolCall(BaseModel):
+        arguments: dict = {}
+
+    @app.post("/api/tools/{name}")
+    async def call_tool(name: str, body: ToolCall, user: str = U):
+        with acting_as(user):
+            async with Client(mcp) as c:
+                result = await c.call_tool(name, body.arguments)
+        texts = [c.text for c in result.content if getattr(c, "text", None) is not None]
+        return {"is_error": result.is_error, "content": texts,
+                "characters": sum(len(t) for t in texts)}
+
+    @app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+    def api_not_found(rest: str):
+        return JSONResponse({"detail": "Unknown portal address."}, status_code=404)
+
+    # ---- the React app ------------------------------------------------------
+
+    if DIST.exists():
+        app.mount("/", StaticFiles(directory=DIST, html=True), name="portal")
+    else:
+        @app.get("/")
+        def not_built():
+            return JSONResponse({"detail": "Portal frontend not built. Run ./portal (it builds automatically)."})
+
+    return app
+
+
+class _Unauthorized(Exception):
+    pass
+
+
+def _free_port(preferred: int) -> int:
+    with socket.socket() as s:
+        try:
+            s.bind(("127.0.0.1", preferred))
+            return preferred
+        except OSError:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+
+def main():
+    import uvicorn
+
+    parser = argparse.ArgumentParser(description="CodeSpringHub portal")
+    parser.add_argument("--port", type=int, default=8780)
+    parser.add_argument("--new-link", action="store_true", help="invalidate the old portal link and make a new one")
+    args = parser.parse_args()
+
+    auth = get_auth(new_link=args.new_link)
+    port = _free_port(args.port)
+    host = socket.gethostname()
+    user = auth.user
+    link = f"http://localhost:{port}/#token={auth.token}"
+    print(f"""
+  CodeSpringHub portal is running on {host} (as {user}).
+
+  1. On your laptop, open a terminal and run (leave it open):
+       ssh -N -L {port}:localhost:{port} {user}@{host}
+
+  2. Then open this private link in your browser (don't share it):
+       {link}
+
+  Press Ctrl+C here to stop the portal.
+""", flush=True)
+    uvicorn.run(create_app(auth), host="127.0.0.1", port=port, log_level="warning")
+
+
+if __name__ == "__main__":
+    main()

@@ -15,10 +15,9 @@ import functools
 import json
 
 from mcp.server.mcpserver import MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
 
-from . import config, inspect_data, knowledge, store
-from .permissions import can_access_lab, current_user, require_lab, resolve_asset
+from . import config, hub, store
+from .permissions import current_user
 
 INSTRUCTIONS = """\
 CodeSpringHub connects you to Cold Spring Harbor Laboratory lab context and data that
@@ -64,65 +63,29 @@ def hub_tool(fn):
     return mcp.tool()(wrapper)
 
 
-# ---- helpers -------------------------------------------------------------------
-
-def _accessible_labs(user):
-    return {lid: lab for lid, lab in knowledge.load_labs().items() if can_access_lab(user, lab)}
-
-
-def _get_dataset(user, dataset_id):
-    if not dataset_id.startswith("ds:") or "/" not in dataset_id:
-        raise ToolError("Dataset IDs look like 'ds:<lab>/<name>'. Use list_datasets to find them.")
-    lab_id = dataset_id[3:].split("/", 1)[0]
-    lab = require_lab(user, knowledge.load_labs(), lab_id)
-    ds = knowledge.load_datasets(lab).get(dataset_id)
-    if ds is None:
-        raise ToolError(f"No registered dataset '{dataset_id}'.")
-    return ds
-
-
-def _public(ds: knowledge.Dataset) -> dict:
-    """Dataset metadata safe to show the model (everything except the path)."""
-    return {
-        "id": ds.id, "title": ds.title, "project": ds.project, "assay": ds.assay,
-        "description": ds.description, "sensitivity": ds.sensitivity,
-        "registered_by": ds.registered_by, "registered_on": ds.registered_on,
-    }
-
-
 # ---- identity and labs ---------------------------------------------------------
 
 @hub_tool
 def whoami() -> dict:
     """Show which CSHL user this Hub session is acting as and which labs they can use."""
     user = current_user()
-    return {"user": user, "labs": sorted(_accessible_labs(user))}
+    return {"user": user, "labs": sorted(hub.accessible_labs(user))}
 
 
 @hub_tool
 def list_labs() -> list[dict]:
     """List the labs you can access through CodeSpringHub, with their projects.
     Call this first to find the lab_id other tools need."""
-    out = []
-    for lab in _accessible_labs(current_user()).values():
-        out.append({
-            "lab_id": lab.id, "name": lab.name, "description": lab.description,
-            "projects": [vars(p) for p in lab.projects],
-            "datasets": len(knowledge.load_datasets(lab)),
-            "documents": len(knowledge.load_documents(lab)),
-        })
-    return out
+    return hub.list_labs(current_user())
 
 
 @hub_tool
 def get_lab_context(lab_id: str) -> str:
     """Return a lab's curated context (research areas, organisms, terminology, conventions)
     plus an index of its knowledge documents. Read this before lab-specific answers."""
-    lab = require_lab(current_user(), knowledge.load_labs(), lab_id)
-    ctx = lab.dir / "context.md"
-    body = ctx.read_text() if ctx.exists() else "(This lab has no context.md yet.)"
-    docs = knowledge.load_documents(lab).values()
-    index = "\n".join(f"- {d.id}  [{d.category}]  {d.title}" for d in docs if d.category != "context")
+    ctx = hub.lab_context(current_user(), lab_id)
+    body = ctx["context"] or "(This lab has no context.md yet.)"
+    index = "\n".join(f"- {d['id']}  [{d['category']}]  {d['title']}" for d in ctx["documents"])
     return f"{body}\n\n---\nKnowledge documents (read with read_document):\n{index or '(none)'}"
 
 
@@ -132,27 +95,13 @@ def get_lab_context(lab_id: str) -> str:
 def search_knowledge(query: str, lab_id: str | None = None) -> list[dict]:
     """Keyword search over lab context, BSR guidance, protocols and notes you can access.
     Optionally limit to one lab_id. Returns document IDs with matching snippets."""
-    user = current_user()
-    labs = _accessible_labs(user)
-    if lab_id:
-        labs = {lab_id: require_lab(user, labs, lab_id)}
-    conn = store.connect()
-    try:
-        return store.search(conn, query, list(labs))
-    finally:
-        conn.close()
+    return hub.search(current_user(), query, lab_id)
 
 
 @hub_tool
 def read_document(doc_id: str) -> str:
     """Read one knowledge document in full by its ID (e.g. 'doc:bsr/guidance/ai-assisted-analysis')."""
-    if not doc_id.startswith("doc:") or "/" not in doc_id:
-        raise ToolError("Document IDs look like 'doc:<lab>/<path>'.")
-    lab = require_lab(current_user(), knowledge.load_labs(), doc_id[4:].split("/", 1)[0])
-    doc = knowledge.load_documents(lab).get(doc_id)
-    if doc is None:
-        raise ToolError(f"No document '{doc_id}'. Use get_lab_context or search_knowledge.")
-    return doc.path.read_text()
+    return hub.get_document(current_user(), doc_id).path.read_text()
 
 
 @hub_tool
@@ -160,11 +109,7 @@ def suggest_context_edit(lab_id: str, suggestion: str, doc_id: str | None = None
     """Propose an addition or correction to a lab's context or a knowledge document.
     Nothing changes immediately: the suggestion is queued for a person at the lab/BSR
     to review and apply. Use when the user shares something the Hub should remember."""
-    user = current_user()
-    require_lab(user, knowledge.load_labs(), lab_id)
-    conn = store.connect()
-    sid = store.add_suggestion(conn, user, lab_id, doc_id, suggestion)
-    conn.close()
+    sid = hub.suggest_edit(current_user(), lab_id, suggestion, doc_id)
     return f"Suggestion #{sid} queued for review by {lab_id}. It is not live until a person applies it."
 
 
@@ -173,17 +118,13 @@ def suggest_context_edit(lab_id: str, suggestion: str, doc_id: str | None = None
 @hub_tool
 def list_datasets(lab_id: str, project: str | None = None) -> list[dict]:
     """List datasets registered in a lab (optionally one project). Returns Hub dataset IDs."""
-    lab = require_lab(current_user(), knowledge.load_labs(), lab_id)
-    return [_public(d) for d in knowledge.load_datasets(lab).values() if project in (None, d.project)]
+    return hub.list_datasets(current_user(), lab_id, project)
 
 
 @hub_tool
 def describe_dataset(dataset_id: str) -> dict:
     """Show a registered dataset's metadata and the files (assets) inside it, with sizes."""
-    ds = _get_dataset(current_user(), dataset_id)
-    root = resolve_asset(ds)
-    assets = inspect_data.list_assets(root)
-    return _public(ds) | {"assets": assets, "assets_truncated": len(assets) >= config.MAX_LISTED_FILES}
+    return hub.describe_dataset(current_user(), dataset_id)
 
 
 @hub_tool
@@ -191,11 +132,7 @@ def inspect_asset(dataset_id: str, asset: str) -> dict:
     """Summarize one file in a registered dataset without returning the raw data:
     tables give columns, types, row count and a short preview; FASTQ gives read-length
     and GC statistics; text files give their first lines. `asset` is the name from describe_dataset."""
-    ds = _get_dataset(current_user(), dataset_id)
-    path = resolve_asset(ds, asset)
-    if path.is_dir():
-        raise ToolError("That is a folder; pass a file name from describe_dataset.")
-    return inspect_data.summarize(path, sensitive=ds.sensitivity == "sensitive")
+    return hub.inspect_asset(current_user(), dataset_id, asset)
 
 
 @hub_tool
@@ -203,10 +140,7 @@ def query_table(dataset_id: str, asset: str, sql: str) -> dict:
     """Run one read-only SQL SELECT against a table file (csv/tsv/parquet) in a registered
     dataset. The file is available as the table `data`, e.g.
     SELECT condition, count(*) FROM data GROUP BY condition. At most 50 rows are returned."""
-    ds = _get_dataset(current_user(), dataset_id)
-    if ds.sensitivity == "sensitive":
-        raise ToolError("This dataset is marked sensitive; row-level queries are disabled. Ask BSR.")
-    return inspect_data.query_table(resolve_asset(ds, asset), sql)
+    return hub.query_table(current_user(), dataset_id, asset, sql)
 
 
 # ---- BSR workflows and escalation ----------------------------------------------
@@ -215,10 +149,7 @@ def query_table(dataset_id: str, asset: str, sql: str) -> dict:
 def list_workflows(assay: str | None = None) -> list[dict]:
     """List BSR-registered analysis workflows, optionally filtered by assay (e.g. 'rna-seq').
     Status 'validated' = BSR signed off; 'candidate' = recommended, not yet signed off."""
-    wfs = knowledge.load_workflows()
-    if assay:
-        wfs = [w for w in wfs if assay.lower() in [a.lower() for a in w.get("assays", [])]]
-    return wfs
+    return hub.list_workflows(assay)
 
 
 @hub_tool
@@ -227,12 +158,7 @@ def request_bsr_review(lab_id: str, summary: str, dataset_ids: list[str] | None 
     or when no BSR workflow fits. `summary` should state the scientific question, the data,
     and what has been tried so far."""
     user = current_user()
-    require_lab(user, knowledge.load_labs(), lab_id)
-    for ds_id in dataset_ids or []:
-        _get_dataset(user, ds_id)
-    conn = store.connect()
-    rid = store.add_review(conn, user, lab_id, summary, dataset_ids or [])
-    conn.close()
+    rid = hub.request_review(user, lab_id, summary, dataset_ids)
     return f"BSR review ticket #{rid} created. A BSR team member will follow up with {user}."
 
 
