@@ -1,0 +1,9 @@
+# Who this "lab" is and who may see it through the Hub.
+name: Bioinformatics Shared Resource (BSR)
+unix_group: bioinformatics        # members of this Unix group can use this lab in the Hub
+description: CSHL core facility providing bioinformatics analysis, workflows, training and AI guidance.
+
+projects:
+  - id: codespringhub-pilot
+    name: CodeSpringHub pilot
+    description: Building and testing CodeSpringHub.v1 with three CSHL labs.

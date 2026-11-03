@@ -1,0 +1,7 @@
+sample,condition,replicate,fastq_1
+S1,control,1,reads/S1_R1.fastq.gz
+S2,control,2,reads/S2_R1.fastq.gz
+S3,control,3,reads/S3_R1.fastq.gz
+S4,treated,1,reads/S4_R1.fastq.gz
+S5,treated,2,reads/S5_R1.fastq.gz
+S6,treated,3,reads/S6_R1.fastq.gz

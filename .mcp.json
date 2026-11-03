@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "codespringhub": {
+      "command": "/grid/bsr/data/data/bsr_readable_data/CodeSpringHub/env/bin/codespringhub",
+      "args": []
+    }
+  }
+}

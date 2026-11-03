@@ -1,0 +1,12 @@
+name: codespringhub
+channels: [conda-forge]
+dependencies:
+  - python=3.12
+  - nodejs>=20      # only for the MCP Inspector (npx @modelcontextprotocol/inspector)
+  - duckdb
+  - pyyaml
+  - pytest
+  - pip
+  - pip:
+      - mcp==2.3.0
+      - -e .

@@ -1,0 +1,10 @@
+# Conda environment (rebuild from environment.yml)
+env/
+# Runtime state: SQLite index, audit log, review tickets
+var/
+# Secrets never go in this folder (it is group-readable)
+*.secret
+.env
+__pycache__/
+*.egg-info/
+.pytest_cache/

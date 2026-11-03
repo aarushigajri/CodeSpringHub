@@ -1,0 +1,20 @@
+[project]
+name = "codespringhub"
+version = "0.1.0"
+description = "CodeSpringHub.v1: MCP server connecting Claude to CSHL lab context and registered data"
+requires-python = ">=3.12"
+dependencies = ["mcp==2.3.0", "duckdb", "pyyaml"]
+
+[project.scripts]
+codespringhub = "codespringhub.server:main"
+hub = "codespringhub.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["server"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

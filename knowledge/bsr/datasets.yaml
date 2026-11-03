@@ -1,0 +1,13 @@
+# Registered datasets: pointers to data on /grid/. The data is never copied.
+# Claude only ever sees the "id" (as ds:bsr/<id>), never the path.
+# sensitivity: "standard" allows short previews; "sensitive" allows summaries only.
+datasets:
+  - id: demo-rnaseq
+    title: Demo bulk RNA-seq (synthetic)
+    project: codespringhub-pilot
+    path: /grid/bsr/data/data/bsr_readable_data/CodeSpringHub/demo_data/demo-rnaseq
+    assay: rna-seq
+    description: SYNTHETIC test data (random counts, 6 samples, 2 conditions) for trying the Hub. Not real biology.
+    sensitivity: standard
+    registered_by: gajri
+    registered_on: "2026-11-03"

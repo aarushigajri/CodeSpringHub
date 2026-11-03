@@ -1,0 +1,39 @@
+# BSR workflow registry (global: every Hub user can list these).
+# status: "validated" = signed off by BSR; "candidate" = recommended, not yet signed off.
+# TODO(BSR): review each entry, pin the version BSR has tested, and set status.
+workflows:
+  - id: nf-core-rnaseq
+    name: nf-core/rnaseq
+    assays: [rna-seq]
+    status: candidate
+    version: TODO
+    url: https://nf-co.re/rnaseq
+    summary: Bulk RNA-seq from FASTQ to QC report and gene counts.
+  - id: nf-core-sarek
+    name: nf-core/sarek
+    assays: [wgs, wes, dna-seq]
+    status: candidate
+    version: TODO
+    url: https://nf-co.re/sarek
+    summary: Germline and somatic variant calling from WGS/WES FASTQ.
+  - id: nf-core-scrnaseq
+    name: nf-core/scrnaseq
+    assays: [scrna-seq]
+    status: candidate
+    version: TODO
+    url: https://nf-co.re/scrnaseq
+    summary: Single-cell RNA-seq preprocessing to count matrices.
+  - id: nf-core-atacseq
+    name: nf-core/atacseq
+    assays: [atac-seq]
+    status: candidate
+    version: TODO
+    url: https://nf-co.re/atacseq
+    summary: ATAC-seq alignment, peak calling and QC.
+  - id: nf-core-chipseq
+    name: nf-core/chipseq
+    assays: [chip-seq]
+    status: candidate
+    version: TODO
+    url: https://nf-co.re/chipseq
+    summary: ChIP-seq alignment, peak calling and QC.
