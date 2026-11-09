@@ -6,14 +6,17 @@ import json
 import pytest
 from mcp import Client
 
-from codespringhub import config
+from codespringhub import config, store
 from codespringhub.permissions import acting_as
+
+from conftest import USER
 from codespringhub.server import mcp
 
-def call(tool, **args):
+def call(tool, as_user=None, **args):
     async def go():
-        async with Client(mcp) as c:
-            return await c.call_tool(tool, args)
+        with acting_as(as_user or USER):
+            async with Client(mcp) as c:
+                return await c.call_tool(tool, args)
 
     r = asyncio.run(go())
     if r.is_error:
@@ -30,12 +33,19 @@ def call(tool, **args):
     return blocks if tool in LIST_TOOLS else blocks[0]
 
 
-LIST_TOOLS = {"list_labs", "search_knowledge", "list_datasets", "list_workflows"}
+LIST_TOOLS = {"search_knowledge", "list_datasets", "list_workflows"}
 
 
-def test_only_member_labs_are_visible():
-    assert [lab["lab_id"] for lab in call("list_labs")] == ["bsr"]
-    assert "error" in call("get_lab_context", lab_id="otherlab")
+def labs_of(user):
+    return sorted(lab["lab_id"] for lab in call("list_labs", as_user=user)["labs"])
+
+
+def test_labs_visible_by_membership_and_bsr_supports_all():
+    assert labs_of("ann") == ["lab-a"]
+    assert labs_of("carl") == ["lab-b"]
+    assert labs_of("bsrstaff") == ["bsr", "lab-a", "lab-b"]
+    assert "error" in call("get_lab_context", as_user="ann", lab_id="lab-b")
+    assert "usage" in call("list_labs", as_user="ann")["usage_notice"]
 
 
 def test_context_edit_is_live_immediately(hub):
@@ -60,7 +70,8 @@ def test_new_guidance_file_is_found_and_templates_are_hidden(hub):
 
 
 def test_search_never_returns_other_labs():
-    assert call("search_knowledge", query="zebrafish") == []
+    assert call("search_knowledge", as_user="ann", query="zebrafish") == []
+    assert call("search_knowledge", as_user="carl", query="zebrafish")[0]["doc_id"] == "doc:lab-b/context"
 
 
 def test_dataset_inspection_hides_paths():
@@ -101,18 +112,20 @@ def test_suggestions_and_reviews_are_queued_and_everything_is_audited():
     assert "not live until a person applies it" in msg
     assert "#1" in call("request_bsr_review", lab_id="bsr", summary="Novel design", dataset_ids=["ds:bsr/demo-rnaseq"])
 
-    import sqlite3
-    conn = sqlite3.connect(config.DB_PATH)
-    tools = [r[0] for r in conn.execute("SELECT tool FROM audit")]
+    assert len(list((config.KNOWLEDGE_DIR / "bsr" / "_suggestions").glob("*.yaml"))) == 1
+    tools = [r["tool"] for r in store.read_events("audit")]
     assert tools == ["suggest_context_edit", "request_bsr_review"]
+    assert {r["lab_id"] for r in store.read_events("audit")} == {"bsr"}
     # The context file itself is untouched by a suggestion.
     assert "GRCm39" not in call("get_lab_context", lab_id="bsr")
 
 
-def test_new_state_files_are_private():
+def test_usage_log_is_a_private_drop_box():
     call("whoami")
-    assert config.VAR_DIR.stat().st_mode & 0o777 == 0o770
-    assert config.DB_PATH.stat().st_mode & 0o777 == 0o660
+    events = config.VAR_DIR / "events"
+    assert events.stat().st_mode & 0o7777 == 0o3770  # BSR group, sticky
+    log = events / f"{USER}.db"
+    assert log.stat().st_mode & 0o777 == 0o640       # owner writes, BSR reads, nobody else
 
 
 def test_workflows_filter():

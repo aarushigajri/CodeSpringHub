@@ -10,18 +10,22 @@ with BSR as the first lab. There are two ways in:
 
 ## Start the portal (the easy way)
 
-On the cluster:
+From your laptop (on CSHL Wi-Fi or VPN), one command. The **Connect Claude** page shows it with
+your username and port already filled in:
 ```bash
-/grid/bsr/data/data/bsr_readable_data/CodeSpringHub/portal.sh
+ssh -t -L <port>:localhost:<port> <you>@bamdev1.cshl.edu /grid/bsr/data/data/bsr_readable_data/CodeSpringHub/portal.sh
 ```
-It prints two things:
-1. an `ssh -N -L …` command. Run it **on your laptop** and leave it open.
-2. a private link (`http://localhost:8780/#token=…`). Open it in your laptop's browser.
+It logs you in, starts your own portal, and prints a private link (`http://localhost:<port>/#token=…`).
+Open it in your browser and keep the terminal open while you use the portal.
 
-The link is personal: anyone holding it can use the portal as you, so don't share it. Every BSR
-member runs their own copy (`portal.sh` from the same folder) and gets their own link, kept in
-`~/.codespringhub/` in their home folder. If someone else is using port 8780, the portal picks a free port.
-`./portal.sh --new-link` makes the old link stop working. Stop the portal with Ctrl+C.
+Already logged in to the cluster? Run `portal.sh` there instead; it also prints the `ssh -N -L …`
+command to run on your laptop.
+
+Everyone (BSR and lab members) runs their own copy and gets their own link, kept in
+`~/.codespringhub/` in their home folder. The link is personal: anyone holding it can use the portal
+as you, so don't share it. Each person has a fixed port (worked out from their account number), so
+two people's portals never collide. `portal.sh --new-link` makes the old link stop working. Stop the
+portal with Ctrl+C.
 
 In the portal:
 - **Lab page:** lab name, projects, and the context page Claude reads first (editor with live preview).
@@ -34,6 +38,33 @@ In the portal:
 - **Activity:** every Claude request and portal edit.
 
 Every save is a local git commit with your name (**History** tab), so nothing is lost.
+
+## Running the three-lab pilot
+
+Researchers use **their own Claude Desktop** (CSHL Enterprise account). Claude Desktop starts the Hub
+on the cluster through **their own SSH login**, so it runs as them and sees only what they can already see.
+IT doesn't need to be involved.
+
+1. **BSR sets up the lab (once):**
+   ```bash
+   hub add-lab smith-lab --group "smith lab staff" --name "Smith Lab" --pi jsmith
+   hub check
+   ```
+2. **With the lab, in the portal:** fill in the lab page and register shared **data** and **code**.
+   Members can add **personal** items (only they and their PI can see them, not BSR).
+3. **Each researcher connects Claude:** portal → **Connect Claude** gives them SSH-key steps (Mac or
+   Windows) and the exact Claude Desktop setup to paste. `hub doctor` checks that it works for them.
+4. **BSR follows usage** on the Activity page. Connecting means usage is shared with BSR; requests about
+   personal items are logged without details.
+
+| | Lab-shared | Personal | Usage logs |
+|---|---|---|---|
+| Member | read + edit | own only | own |
+| PI | read + edit | own + members' | own |
+| BSR | read + edit (all labs) | no | everyone's (personal details withheld) |
+
+Lab knowledge stays on `/grid` in each lab's own history and is never pushed to GitHub. Details are in
+[docs/DESIGN.md](docs/DESIGN.md) section 12.
 
 ## What's here
 
@@ -115,6 +146,7 @@ npx @modelcontextprotocol/inspector ./env/bin/codespringhub
 | `suggest_context_edit` | Queue a proposed context change for human review |
 | `list_datasets`, `describe_dataset` | Registered data, by Hub ID only (no paths) |
 | `inspect_asset` | Summary of one file: table shape and preview, FASTQ stats, first lines of text |
+| `read_code_file` | Full source of a script/notebook/pipeline in a registered **code** resource |
 | `query_table` | One read-only SQL SELECT on a table file, max 50 rows, no other file access |
 | `list_workflows` | BSR workflow registry (`validated` / `candidate`) |
 | `request_bsr_review` | Open a ticket for a human BSR expert |

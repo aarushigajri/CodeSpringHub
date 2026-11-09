@@ -68,6 +68,10 @@ def create_app(auth=None) -> FastAPI:
         return {"user": user, "name": display_name(user), "is_bsr": is_bsr(user), "auth": auth.name,
                 "categories": editing.CATEGORIES, "assays": editing.ASSAYS}
 
+    @app.get("/api/connect")
+    def connect(user: str = U, for_user: str | None = None):
+        return editing.connect_info(user, for_user)
+
     @app.get("/api/labs")
     def labs(user: str = U):
         return hub.list_labs(user)
@@ -76,7 +80,8 @@ def create_app(auth=None) -> FastAPI:
     def lab_detail(lab_id: str, user: str = U):
         lab = require_lab(user, knowledge.load_labs(), lab_id)
         info = next(l for l in hub.list_labs(user) if l["lab_id"] == lab_id)
-        return info | {"unix_group": lab.unix_group, "documents_list": hub.document_index(lab)}
+        return info | {"unix_group": lab.unix_group, "pis": lab.pis,
+                       "documents_list": hub.document_index(user, lab)}
 
     class LabIn(BaseModel):
         name: str
@@ -100,6 +105,7 @@ def create_app(auth=None) -> FastAPI:
     class NewDoc(BaseModel):
         category: str
         title: str
+        scope: str = "lab"
 
     @app.get("/api/labs/{lab_id}/docs/{rel_path:path}")
     def doc_get(lab_id: str, rel_path: str, user: str = U):
@@ -112,7 +118,7 @@ def create_app(auth=None) -> FastAPI:
 
     @app.post("/api/labs/{lab_id}/docs")
     def doc_new(lab_id: str, body: NewDoc, user: str = U):
-        return {"rel_path": editing.create_document(user, lab_id, body.category, body.title)}
+        return {"rel_path": editing.create_document(user, lab_id, body.category, body.title, body.scope)}
 
     @app.delete("/api/labs/{lab_id}/docs/{rel_path:path}")
     def doc_delete(lab_id: str, rel_path: str, user: str = U):
@@ -123,15 +129,14 @@ def create_app(auth=None) -> FastAPI:
 
     @app.get("/api/labs/{lab_id}/datasets")
     def datasets(lab_id: str, user: str = U):
-        # Lab editors see paths (they registered them); Claude never does.
-        lab = require_lab(user, knowledge.load_labs(), lab_id)
-        return [hub.public_dataset(d) | {"short_id": d.id.split("/", 1)[1], "path": d.path}
-                for d in knowledge.load_datasets(lab).values()]
+        # People see folder paths (they registered them); Claude never does.
+        return editing.datasets_for_portal(user, lab_id)
 
     class DatasetIn(BaseModel):
-        id: str | None = None
         title: str
         path: str
+        kind: str = "data"
+        scope: str = "lab"
         project: str | None = None
         assay: str = ""
         description: str = ""
@@ -141,13 +146,14 @@ def create_app(auth=None) -> FastAPI:
     def dataset_new(lab_id: str, body: DatasetIn, user: str = U):
         return {"id": editing.save_dataset(user, lab_id, body.model_dump())}
 
-    @app.put("/api/labs/{lab_id}/datasets/{ds_id}")
-    def dataset_put(lab_id: str, ds_id: str, body: DatasetIn, user: str = U):
-        return {"id": editing.save_dataset(user, lab_id, body.model_dump(), original_id=ds_id)}
+    # Hub IDs contain "/" and "~", so existing items are addressed with ?id=<hub id>.
+    @app.put("/api/labs/{lab_id}/dataset")
+    def dataset_put(lab_id: str, id: str, body: DatasetIn, user: str = U):
+        return {"id": editing.save_dataset(user, lab_id, body.model_dump(), original_id=id)}
 
-    @app.delete("/api/labs/{lab_id}/datasets/{ds_id}")
-    def dataset_delete(lab_id: str, ds_id: str, user: str = U):
-        editing.delete_dataset(user, lab_id, ds_id)
+    @app.delete("/api/labs/{lab_id}/dataset")
+    def dataset_delete(lab_id: str, id: str, user: str = U):
+        editing.delete_dataset(user, lab_id, id)
         return {"ok": True}
 
     @app.get("/api/browse")
@@ -196,13 +202,13 @@ def create_app(auth=None) -> FastAPI:
         return editing.inbox(user)
 
     @app.post("/api/suggestions/{sid}")
-    def suggestion_status(sid: int, body: StatusIn, user: str = U):
+    def suggestion_status(sid: str, body: StatusIn, user: str = U):
         editing.set_suggestion_status(user, sid, body.status)
         return {"ok": True}
 
-    @app.post("/api/reviews/{rid}")
-    def review_status(rid: int, body: StatusIn, user: str = U):
-        editing.set_review_status(user, rid, body.status)
+    @app.post("/api/reviews/{key}")
+    def review_status(key: str, body: StatusIn, user: str = U):
+        editing.set_review_status(user, key, body.status)
         return {"ok": True}
 
     @app.get("/api/activity")
@@ -264,22 +270,28 @@ def main():
     import uvicorn
 
     parser = argparse.ArgumentParser(description="CodeSpringHub portal")
-    parser.add_argument("--port", type=int, default=8780)
+    parser.add_argument("--port", type=int, default=None, help="default: your own fixed port")
     parser.add_argument("--new-link", action="store_true", help="invalidate the old portal link and make a new one")
     args = parser.parse_args()
 
     auth = get_auth(new_link=args.new_link)
-    port = _free_port(args.port)
-    host = socket.gethostname()
     user = auth.user
+    wanted = args.port or editing.portal_port(user)
+    port = _free_port(wanted)
+    host = editing._laptop_hostname()
     link = f"http://localhost:{port}/#token={auth.token}"
+    moved = "" if port == wanted else (
+        f"\n  Note: port {wanted} was busy (do you already have a portal open?), so this one uses {port}.\n"
+        f"  The one-line command won't reach it; use step 1 below.\n")
     print(f"""
   CodeSpringHub portal is running on {host} (as {user}).
+{moved}
+  Started with the one-line command from the Connect page? Just open the link in step 2.
 
-  1. On your laptop, open a terminal and run (leave it open):
+  1. Otherwise, on your laptop open a terminal and run (leave it open):
        ssh -N -L {port}:localhost:{port} {user}@{host}
 
-  2. Then open this private link in your browser (don't share it):
+  2. Open this private link in your browser (don't share it):
        {link}
 
   Press Ctrl+C here to stop the portal.

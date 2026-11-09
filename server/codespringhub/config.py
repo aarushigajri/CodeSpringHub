@@ -12,12 +12,20 @@ HUB_HOME = Path(os.environ.get("CODESPRINGHUB_HOME", Path(__file__).resolve().pa
 # Human-edited content: one folder per lab, plus BSR-global files (workflows.yaml).
 KNOWLEDGE_DIR = HUB_HOME / "knowledge"
 
-# Machine state (search index, audit log, review tickets). Safe to delete; it is rebuilt.
+# Machine state. var/ is BSR's; var/events/ is a drop box where each person's process writes
+# its own usage log (<user>.db): people can add their own file but not read anyone else's.
 VAR_DIR = HUB_HOME / "var"
-DB_PATH = VAR_DIR / "hub.db"
+DB_PATH = VAR_DIR / "hub.db"  # BSR-only: review-ticket status
+# (var/events/ and knowledge/roles.yaml, the BSR-managed PI list, are derived from these at use time.)
 
-# Per-person private files (the portal link). Never inside the shared Hub folder.
-TOKEN_DIR = Path(os.environ.get("CODESPRINGHUB_TOKEN_DIR", Path.home() / ".codespringhub"))
+# BSR staff: support every lab's shared content and the workflow registry, never personal content.
+BSR_GROUP = "bioinformatics"
+
+# Per-person private files (portal link, personal search index). Never inside the shared Hub folder.
+USER_DIR = Path(os.environ.get("CODESPRINGHUB_USER_DIR", Path.home() / ".codespringhub"))
+
+# What researchers' laptops SSH to when Claude Desktop starts the Hub (shown on the Connect page).
+CONNECT_HOST = os.environ.get("CODESPRINGHUB_CONNECT_HOST", "")
 
 # The folder picker and dataset registration are limited to these roots.
 BROWSE_ROOTS = [r for r in os.environ.get("CODESPRINGHUB_BROWSE_ROOTS", "/grid").split(":") if r]

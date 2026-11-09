@@ -30,15 +30,17 @@ def test_requires_the_private_link(hub):
     client = TestClient(create_app(LocalLinkAuth(new_link=True)))
     assert client.get("/api/me").status_code == 401
     assert client.get("/api/me", headers={"Authorization": "Bearer wrong"}).status_code == 401
-    assert (config.TOKEN_DIR / "portal-token").stat().st_mode & 0o777 == 0o600
-    assert config.TOKEN_DIR.stat().st_mode & 0o777 == 0o700
+    assert (config.USER_DIR / "portal-token").stat().st_mode & 0o777 == 0o600
+    assert config.USER_DIR.stat().st_mode & 0o777 == 0o700
 
 
 def test_labs_and_permissions(api):
-    labs = api.get("/api/labs").json()
-    assert [l["lab_id"] for l in labs] == ["bsr"] and labs[0]["can_edit"]
-    assert api.get("/api/labs/otherlab").status_code == 404
-    assert api.put("/api/labs/otherlab/docs/context.md", json={"text": "x"}).status_code == 404
+    # The tester is BSR staff (supports every lab) and a member of lab-a.
+    labs = {l["lab_id"]: l for l in api.get("/api/labs").json()}
+    assert sorted(labs) == ["bsr", "lab-a", "lab-b"] and labs["bsr"]["can_edit"]
+    assert labs["lab-a"]["role"] == "member" and labs["lab-b"]["role"] == "bsr"
+    assert api.get("/api/labs/nope").status_code == 404
+    assert api.put("/api/labs/nope/docs/context.md", json={"text": "x"}).status_code == 404
 
 
 def test_edit_context_is_live_for_claude_and_committed(api, hub):
@@ -81,7 +83,7 @@ def test_register_dataset_with_folder_browser(api, hub):
     r = api.post("/api/tools/query_table", json={"arguments": {
         "dataset_id": ds_id, "asset": "counts.tsv", "sql": "SELECT 1"}}).json()
     assert r["is_error"] and "sensitive" in r["content"][0]
-    assert git_log(hub)[0].endswith("register dataset bsr/second-copy")
+    assert git_log(hub)[0].endswith("register data bsr/second-copy")
 
 
 @pytest.mark.parametrize("path,msg", [
@@ -114,7 +116,7 @@ def test_inbox_flow(api):
     api.post("/api/tools/suggest_context_edit", json={"arguments": {"lab_id": "bsr", "suggestion": "Add GRCm39"}})
     api.post("/api/tools/request_bsr_review", json={"arguments": {"lab_id": "bsr", "summary": "Help"}})
     inbox = api.get("/api/inbox").json()
-    sid, rid = inbox["suggestions"][0]["id"], inbox["reviews"][0]["id"]
+    sid, rid = inbox["suggestions"][0]["id"], inbox["reviews"][0]["key"]
     api.post(f"/api/suggestions/{sid}", json={"status": "applied"}).raise_for_status()
     api.post(f"/api/reviews/{rid}", json={"status": "closed"}).raise_for_status()
     inbox = api.get("/api/inbox").json()

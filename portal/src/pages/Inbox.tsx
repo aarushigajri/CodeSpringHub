@@ -3,8 +3,11 @@ import { Ctx } from "../App";
 import { get, post } from "../api";
 import { Badge, Empty, Help, attempt } from "../components";
 
-type Suggestion = { id: number; ts: string; user: string; lab_id: string; doc_id: string | null; suggestion: string; status: string };
-type Review = { id: number; ts: string; user: string; lab_id: string; summary: string; resource_ids: string; status: string };
+type Suggestion = {
+  id: string; ts: string; user: string; lab_id: string; doc_id: string | null; suggestion: string; status: string;
+  scope: "lab" | "personal"; can_change: boolean;
+};
+type Review = { id: number; key: string; ts: string; user: string; lab_id: string; summary: string; resource_ids: string; status: string };
 
 export default function Inbox({ ctx }: { ctx: Ctx }) {
   const [data, setData] = useState<{ suggestions: Suggestion[]; reviews: Review[] } | null>(null);
@@ -25,7 +28,11 @@ export default function Inbox({ ctx }: { ctx: Ctx }) {
   const labName = (id: string) => ctx.labs.find((l) => l.lab_id === id)?.name ?? id;
 
   function docLink(s: Suggestion) {
-    const rel = s.doc_id ? s.doc_id.split("/").slice(1).join("/") + ".md" : "context.md";
+    // doc:lab/guidance/x -> guidance/x.md ; doc:lab/~ann/notes/x -> members/ann/notes/x.md
+    const inner = s.doc_id ? s.doc_id.split("/").slice(1) : [];
+    const rel = !inner.length ? "context.md"
+      : inner[0].startsWith("~") ? `members/${inner[0].slice(1)}/${inner.slice(1).join("/")}.md`
+      : `${inner.join("/")}.md`;
     return `#/lab/${s.lab_id}/doc/${rel}?suggestion=${encodeURIComponent(s.suggestion)}`;
   }
 
@@ -50,11 +57,11 @@ export default function Inbox({ ctx }: { ctx: Ctx }) {
             {s.status !== "pending" && <Badge kind="muted">{s.status}</Badge>}
           </div>
           <blockquote>{s.suggestion}</blockquote>
-          {s.status === "pending" && (
+          {s.status === "pending" && s.can_change && (
             <div className="actions">
               <a className="button primary" href={docLink(s)}>Open document to apply</a>
-              <button onClick={async () => (await attempt(() => post(`/api/suggestions/${s.id}`, { status: "applied" }), "Marked as applied.")) && load()}>Mark applied</button>
-              <button className="ghost" onClick={async () => (await attempt(() => post(`/api/suggestions/${s.id}`, { status: "dismissed" }), "Dismissed.")) && load()}>Dismiss</button>
+              <button onClick={async () => (await attempt(() => post(`/api/suggestions/${encodeURIComponent(s.id)}`, { status: "applied" }), "Marked as applied.")) && load()}>Mark applied</button>
+              <button className="ghost" onClick={async () => (await attempt(() => post(`/api/suggestions/${encodeURIComponent(s.id)}`, { status: "dismissed" }), "Dismissed.")) && load()}>Dismiss</button>
             </div>
           )}
         </div>
@@ -68,7 +75,7 @@ export default function Inbox({ ctx }: { ctx: Ctx }) {
       </Help>
       {reviews.length === 0 && <Empty title="No open requests." />}
       {reviews.map((r) => (
-        <div key={r.id} className="item">
+        <div key={r.key} className="item">
           <div className="item-head">
             <strong>#{r.id} · {labName(r.lab_id)}</strong>
             <span className="muted"> · from {r.user} · {r.ts.slice(0, 16).replace("T", " ")}</span>
@@ -79,7 +86,7 @@ export default function Inbox({ ctx }: { ctx: Ctx }) {
           {ctx.me.is_bsr && (
             <div className="actions">
               {["open", "in progress", "closed"].filter((st) => st !== r.status).map((st) => (
-                <button key={st} onClick={async () => (await attempt(() => post(`/api/reviews/${r.id}`, { status: st }))) && load()}>
+                <button key={st} onClick={async () => (await attempt(() => post(`/api/reviews/${encodeURIComponent(r.key)}`, { status: st }))) && load()}>
                   Mark {st}
                 </button>
               ))}

@@ -15,6 +15,13 @@ from . import config
 
 TABLE_EXT = {".csv", ".tsv", ".txt", ".parquet"}
 TEXT_EXT = {".md", ".yaml", ".yml", ".json", ".log", ".txt", ".html", ".sh", ".nf", ".config"}
+# Source files Claude may read in full from a registered *code* resource.
+CODE_EXT = TEXT_EXT | {".py", ".r", ".rmd", ".qmd", ".ipynb", ".pl", ".jl", ".sql", ".smk", ".wdl", ".cwl",
+                       ".toml", ".cfg", ".ini", ".c", ".cpp", ".h", ".java", ".js", ".ts", ".bash", ".zsh",
+                       ".slurm", ".sbatch", ".awk", ".m", ".rs", ".go", ".csv", ".tsv"}
+CODE_NAMES = {"Snakefile", "Makefile", "Dockerfile", "Singularity", "Apptainer", "nextflow.config",
+              "README", "LICENSE", "environment.yml", "requirements.txt", "DESCRIPTION", "NAMESPACE"}
+SKIP_DIRS = {"__pycache__", "node_modules", ".snakemake", "work", ".nextflow", "renv", ".Rproj.user"}
 FASTQ_EXT = {".fastq", ".fq"}
 
 
@@ -38,7 +45,7 @@ def list_assets(root: Path) -> list[dict]:
         return [{"asset": root.name, "size": _human(root.stat().st_size)}]
     out = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d not in SKIP_DIRS)
         for name in sorted(filenames):
             if name.startswith("."):
                 continue
@@ -108,6 +115,18 @@ def summarize_text(path: Path, max_lines: int = 80) -> dict:
             lines.append(line.rstrip("\n"))
     text = "\n".join(lines)[: config.MAX_OUTPUT_CHARS]
     return {"kind": "text", "first_lines": text, "truncated": len(lines) == max_lines}
+
+
+def read_source(path: Path) -> str:
+    """Full text of a source file from a code resource, capped like every other reply."""
+    if _ext(path) not in CODE_EXT and path.name not in CODE_NAMES:
+        raise ToolError(f"'{path.name}' doesn't look like a source file; use inspect_asset for a summary.")
+    if path.stat().st_size > 2 * config.MAX_OUTPUT_CHARS * 4:
+        raise ToolError(f"'{path.name}' is very large ({_human(path.stat().st_size)}); ask for a specific part, or BSR.")
+    text = path.read_text(errors="replace")
+    if len(text) > config.MAX_OUTPUT_CHARS:
+        text = text[: config.MAX_OUTPUT_CHARS] + f"\n… [file continues: {len(text):,} characters in total]"
+    return text
 
 
 def summarize(path: Path, sensitive: bool) -> dict:

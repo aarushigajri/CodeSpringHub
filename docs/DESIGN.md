@@ -1,6 +1,6 @@
 # CodeSpringHub.v1: Design
 
-*Bioinformatics Shared Resource (BSR), Cold Spring Harbor Laboratory. Status: Phase 0 built; Phase 1 portal built (November 2026).
+*Bioinformatics Shared Resource (BSR), Cold Spring Harbor Laboratory. Status: Phase 0 built; Phase 1 portal built; multi-lab pilot support built (November 2026).
 This document describes what is built today and how the later phases are meant to extend it.*
 
 ---
@@ -202,17 +202,19 @@ workflows:
 **Documents** are Markdown. The first `# Heading` is the title. The ID is
 `doc:<lab>/<path without .md>`, and `context.md` is category `context`.
 
-### 5.2 Machine state (`var/hub.db`, SQLite)
+### 5.2 Machine state
 
-| Table | Contents | Lifecycle |
+Since the multi-lab pilot (section 12), machine state is split so that no file holds more than its readers may see:
+
+| Where | Contents | Who can read it |
 |---|---|---|
-| `docs_fts` | Full-text index (FTS5): doc_id, lab_id, category, title, body | Rebuilt automatically from files |
-| `meta` | `fingerprint` of the knowledge folder | Updated on rebuild |
-| `audit` | ts, user, tool, args (JSON), ok, chars_out, error | Append-only |
-| `reviews` | ts, user, lab_id, summary, resource_ids, status (`open`) | Created by Claude, handled by BSR |
-| `suggestions` | ts, user, lab_id, doc_id, suggestion, status (`pending`) | Created by Claude, handled by a person |
+| `var/events/<user>.db` | that person's usage log (`audit`: ts, user, lab_id, tool, args, ok, chars_out, error), their BSR review requests (`reviews`), notices shown (`notices`) | the person and BSR |
+| `~/.codespringhub/index.db` | that person's full-text index (FTS5), built only from documents they may see | the person |
+| `~/.codespringhub/portal-token` | the person's private portal link | the person |
+| `var/hub.db` | `review_status`: BSR's progress on each review request | BSR |
+| `knowledge/<lab>/_suggestions/*.yaml`, `members/<user>/_suggestions/` | Claude's suggested edits, as files next to what they're about | whoever can see the document |
 
-Deleting `var/` loses only the audit history, reviews and suggestions. The index rebuilds itself.
+The index rebuilds itself. Deleting `var/` loses usage history and review status.
 
 ---
 
@@ -410,7 +412,77 @@ token usage and expert-review needs. The Phase 1 portal turns them into a dashbo
 
 ---
 
-## 12. Open decisions
+## 12. Multi-lab pilot model (built November 2026)
+
+The pilot runs inside CSHL without IT: each researcher's own Claude Desktop starts the Hub on the cluster
+over **their own SSH login** (stdio MCP over SSH). The Hub therefore runs *as that researcher*, and
+cluster permissions apply exactly. Nothing listens on a port, nothing is exposed, and no data is copied
+to laptops. The portal's **Connect Claude** page gives each person their ready-to-paste Claude Desktop
+setup, plus SSH-key steps for Mac and Windows (Claude can't type a password).
+
+### 12.1 Who sees what
+
+| | Lab-shared items | Personal items | Usage logs |
+|---|---|---|---|
+| Lab member | read and edit | only their own | their own |
+| Lab PI (`knowledge/roles.yaml`) | read and edit | their own **and their members'** (read) | their own |
+| BSR staff (`bioinformatics`) | read and edit **every** lab's (support role) | **no** (not authorised) | **everyone's**, with personal details withheld |
+| Other labs | nothing | nothing | nothing |
+
+- **Personal items** (datasets, code, documents) live in `knowledge/<lab>/members/<user>/` and have
+  Hub IDs containing `/~<user>/`. The structure is ready for richer PI and lab-member account types later.
+- **PIs come only from `knowledge/roles.yaml`**, which only BSR can write (`hub set-pis`). A lab member
+  editing their own `lab.yaml` cannot make themselves PI.
+- **Code resources** (`kind: code`): Claude can read source files in full (`read_code_file`, size-capped),
+  plus the git branch and last commit. Data resources still give summaries only.
+- **Consent:** connecting means usage is shared with BSR. The Connect page, the `whoami`/`list_labs`
+  replies and Claude's instructions all say so; the first time it's shown is recorded per person.
+
+### 12.2 How the filesystem enforces it (POSIX ACLs on GPFS)
+
+| Path | Access |
+|---|---|
+| `knowledge/` | BSR rwx; each pilot lab group r-x (list labs, read `workflows.yaml`, `roles.yaml`) |
+| `knowledge/<lab>/` | BSR (owning group) + lab group rwx, inherited by everything created inside |
+| `knowledge/<lab>/.git` | the lab's own history; inherits the lab folder's access; never pushed |
+| `knowledge/<lab>/members/<user>/` | `2700` with inherited ACLs **removed**; plus `u:<pi>:rwx` per PI. Its own `.git` inside. Re-secured on every personal save, so PI changes take effect on the owner's next save |
+| `var/` | BSR; pilot lab groups `--x` only |
+| `var/events/` | `3770` (setgid + **sticky**); pilot lab groups `-wx`, so each person can create their log but can't list, read, delete or rename anyone else's. No default ACLs |
+| `var/events/<user>.db` | `640`, no ACLs. Readers trust a row only if the file's owner *is* that user (a forged `ann.db` is ignored) |
+
+**Why per-lab git repositories:** git stores full copies of every file. One shared repository would let
+anyone who can read `.git` read every lab's files, including personal ones. It would also push lab
+knowledge to GitHub. The main repository's `.gitignore` now keeps all labs except BSR out
+(`knowledge/*/`, `!knowledge/bsr/`, `members/`, `_suggestions/`, `roles.yaml`).
+
+**Why logs are withheld at write time:** BSR can read the log files directly, so personal details are
+replaced with `{"details": "withheld: personal resource"}` *before* they're written, not just hidden in
+the portal. Lab-shared usage keeps full details (search words, dataset IDs) for the pilot evaluation.
+
+### 12.3 Running a pilot lab
+
+```bash
+hub add-lab smith-lab --group "smith lab staff" --name "Smith Lab" --pi jsmith   # BSR, once per lab
+hub set-pis smith-lab jsmith                                                    # BSR, when PIs change
+hub check                                                                       # BSR: every permission
+hub doctor                                                                      # anyone: does it work for me?
+```
+
+`add-lab` creates the folder with the right ACLs, a context template, an empty registry, the
+`members/` folder, the lab's own history, and the group's access to `knowledge/` and `var/events/`.
+
+### 12.4 Limits of this model
+
+- **Same trust as the cluster.** Everything runs as the researcher. A determined member could run their
+  own code against the shared folders, but only within what their Unix account can already do.
+- **Logs are trust-based.** A person's log is written by their own process, so they could stop it
+  (e.g. by deleting their log file). It's good enough to evaluate the pilot, but it's not a security audit
+  trail; Phase 2 makes it one.
+- **BSR can't see personal data, but `root` can.** As with everything on the cluster.
+
+---
+
+## 13. Open decisions
 
 | # | Decision | Owner | Needed by |
 |---|---|---|---|
@@ -422,5 +494,7 @@ token usage and expert-review needs. The Phase 1 portal turns them into a dashbo
 | 6 | Per-user file check: sudo helper vs. ACL check | BSR + IT | Phase 2 |
 | 7 | Hosting and Anthropic reachability | IT | Phase 2 |
 | 8 | PostgreSQL: existing server or self-hosted | IT | Phase 2 |
-| 9 | Three pilot labs: groups, paths, sensitivity classes | BSR + PIs | Phase 3 |
+| 9 | Three pilot labs: groups, paths, sensitivity classes (not Koo or Tuveson) | BSR + PIs | before onboarding |
+| 11 | Which SSH host researchers' Claude Desktop connects to (default `bamdev1.cshl.edu`; set `CODESPRINGHUB_CONNECT_HOST`) | BSR (+ HPC admins) | before onboarding |
+| 12 | Confirm CSHL's Claude Enterprise setup allows local MCP servers in Claude Desktop | AI admin | before onboarding |
 | 10 | Git remote: personal GitHub vs. CSHL/BSR organization | Aarushi | now |

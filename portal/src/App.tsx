@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ApiError, Lab, Me, get } from "./api";
 import { Toasts } from "./components";
 import Activity from "./pages/Activity";
+import Connect from "./pages/Connect";
 import DocumentEditor from "./pages/DocumentEditor";
 import Home from "./pages/Home";
 import Inbox from "./pages/Inbox";
@@ -41,9 +42,9 @@ export default function App() {
     setLabs(await get<Lab[]>("/api/labs"));
   }
   function refreshInbox() {
-    get<{ suggestions: { status: string }[]; reviews: { status: string }[] }>("/api/inbox")
+    get<{ suggestions: { status: string; can_change: boolean }[]; reviews: { status: string }[] }>("/api/inbox")
       .then((i) => setInboxCount(
-        i.suggestions.filter((s) => s.status === "pending").length + i.reviews.filter((r) => r.status === "open").length,
+        i.suggestions.filter((s: any) => s.status === "pending" && s.can_change).length + i.reviews.filter((r) => r.status === "open").length,
       ))
       .catch(() => {});
   }
@@ -81,6 +82,7 @@ export default function App() {
   else if (section === "inbox") page = <Inbox ctx={ctx} />;
   else if (section === "try") page = <TryIt ctx={ctx} />;
   else if (section === "activity") page = <Activity ctx={ctx} />;
+  else if (section === "connect") page = <Connect ctx={ctx} />;
   else page = <Home ctx={ctx} />;
 
   const navItem = (href: string, label: string, active: boolean, extra?: React.ReactNode) => (
@@ -108,6 +110,7 @@ export default function App() {
           {navItem("/workflows", "BSR workflows", section === "workflows")}
           {navItem("/inbox", "Inbox", section === "inbox", inboxCount > 0 && <span className="count">{inboxCount}</span>)}
           {navItem("/try", "Try it as Claude", section === "try")}
+          {navItem("/connect", "Connect Claude", section === "connect")}
           {navItem("/activity", "Activity", section === "activity")}
         </nav>
         <div className="who">

@@ -1,15 +1,17 @@
 """The Hub's write operations, used by the web portal (never exposed to Claude).
 
 Every change:
-  - checks the user may edit that lab (or is BSR, for global things),
+  - checks the user may make it (lab-shared: lab members and BSR; personal: only the owner),
   - validates input and explains problems in plain language,
   - writes the file atomically (a crash never leaves half a file),
-  - records a local git commit with the user as author, so there is history and undo,
-  - writes an audit row.
+  - records a local git commit in the right history (the lab's own, or the person's own),
+  - writes a usage-log row (details withheld for personal items).
 """
 
 import os
+import pwd
 import re
+import socket
 import subprocess
 import tempfile
 import threading
@@ -18,11 +20,13 @@ from pathlib import Path
 
 import yaml
 
-from . import config, knowledge, store
+from . import acl, config, knowledge, store
 from .errors import Forbidden, HubError, NotFound
-from .permissions import can_access_lab, display_name, is_bsr, require_lab, require_lab_editor
+from .permissions import (can_access_lab, can_see, display_name, is_bsr, is_member, require_lab,
+                          require_lab_editor, require_member)
 
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+USERNAME = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}$")
 CATEGORIES = {
     "guidance": "Guidance: how BSR/the lab wants a kind of analysis done",
     "protocols": "Protocol / SOP: step-by-step lab or analysis procedure",
@@ -31,6 +35,8 @@ CATEGORIES = {
 }
 ASSAYS = ["rna-seq", "scrna-seq", "atac-seq", "chip-seq", "wgs", "wes", "dna-seq", "methylation",
           "proteomics", "imaging", "other"]
+KINDS = ("data", "code")
+SCOPES = ("lab", "personal")
 YAML_HEADER = "# Managed by the CodeSpringHub portal. Hand edits are fine; keep the structure.\n"
 
 _git_lock = threading.Lock()
@@ -41,7 +47,7 @@ def slugify(text: str) -> str:
     return s[:63] or "untitled"
 
 
-# ---- low-level file + history helpers -------------------------------------------
+# ---- files, history, audit ---------------------------------------------------------
 
 def _write_atomic(path: Path, text: str):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,30 +59,38 @@ def _write_atomic(path: Path, text: str):
     os.replace(tmp, path)
 
 
-def _make_private_dir(path: Path, like: Path):
-    if not path.exists():
-        path.mkdir()
-        os.chmod(path, like.stat().st_mode & 0o7777)
+def _repo_for(path: Path) -> Path | None:
+    """The nearest git repository holding this file: a person's own, the lab's own, or (for BSR's
+    knowledge and the workflow list) the main Hub repository."""
+    for d in [path.parent, *path.parent.parents]:
+        if (d / ".git").exists():
+            return d
+        if d == config.HUB_HOME:
+            break
+    return None
 
 
-def _git(*args, env=None, check=True):
-    """Run git in the Hub repo as whichever BSR member is using the portal.
-
-    safe.directory: git refuses repos owned by another user unless told otherwise.
-    core.sharedRepository=group: new git objects stay writable for the whole group.
-    """
-    repo = str(config.HUB_HOME)
+def _git(repo: Path, *args, env=None, check=True):
+    """safe.directory: git refuses repos owned by another user unless told otherwise.
+    core.sharedRepository=group: new git objects stay writable for whoever shares the folder."""
     return subprocess.run(
-        ["git", "-c", f"safe.directory={repo}", "-c", "core.sharedRepository=group", "-C", repo, *args],
+        ["git", "-c", f"safe.directory={repo}", "-c", "core.sharedRepository=group", "-C", str(repo), *args],
         check=check, capture_output=True, text=True, env=env,
     )
 
 
+def init_history(folder: Path, ignore: list[str]):
+    if (folder / ".git").exists():
+        return
+    _git(folder, "init", "-q")
+    (folder / ".gitignore").write_text("".join(f"{i}\n" for i in ignore))
+
+
 def _commit(user: str, paths: list[Path], message: str):
-    """Record a local git commit for just these paths. Never pushes. A git problem never
-    blocks a save: the file is already written, so we log it and carry on."""
-    repo = config.HUB_HOME
-    if not (repo / ".git").exists():
+    """A local commit for just these paths. Never pushes. A git problem never blocks a save:
+    the file is already written, so it is logged and the save carries on."""
+    repo = _repo_for(paths[0])
+    if repo is None:
         return
     rel = [str(p.relative_to(repo)) for p in paths]
     name, email = display_name(user), f"{user}@cshl.edu"
@@ -85,36 +99,54 @@ def _commit(user: str, paths: list[Path], message: str):
                         "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email}
     with _git_lock:
         try:
-            _git("add", "-A", "--", *rel, env=env)
-            if _git("diff", "--cached", "--quiet", "--", *rel, check=False).returncode == 0:
+            _git(repo, "add", "-A", "--", *rel, env=env)
+            if _git(repo, "diff", "--cached", "--quiet", "--", *rel, check=False).returncode == 0:
                 return  # nothing changed
-            _git("commit", "-q", "-m", f"portal: {message}", "--", *rel, env=env)
+            _git(repo, "commit", "-q", "-m", f"portal: {message}", "--", *rel, env=env)
         except subprocess.CalledProcessError as e:
-            conn = store.connect()
-            try:
-                store.log_call(conn, user, "portal:history_not_recorded", {"paths": rel}, False, 0,
-                               (e.stderr or str(e)).strip()[:500])
-            finally:
-                conn.close()
+            personal = "/members/" in str(paths[0])
+            store.log_call(user, "portal:history_not_recorded", {"paths": rel}, False, 0,
+                           (e.stderr or str(e)).strip()[:500], personal=personal)
 
 
-def _audit(user, action, details):
-    conn = store.connect()
+def _audit(user, action, details, lab_id=None, personal=False):
     try:
-        store.log_call(conn, user, f"portal:{action}", details, True, 0)
-    finally:
-        conn.close()
+        store.log_call(user, f"portal:{action}", details, True, 0, lab_id=lab_id, personal=personal)
+    except Exception:  # noqa: BLE001 - logging never blocks an edit
+        pass
 
 
 def history(user, lab_id, rel_path=None, limit=20) -> list[dict]:
     lab = require_lab(user, knowledge.load_labs(), lab_id)
-    target = lab.dir / rel_path if rel_path else lab.dir
-    if not (config.HUB_HOME / ".git").exists():
+    target = lab.dir / rel_path if rel_path else lab.dir / "lab.yaml"
+    if rel_path:
+        _check_doc_visible(user, lab, rel_path)
+    repo = _repo_for(target)
+    if repo is None:
         return []
-    out = _git("log", f"-{limit}", "--format=%h%x09%an%x09%ad%x09%s", "--date=format:%Y-%m-%d %H:%M",
-               "--", str(target.relative_to(config.HUB_HOME)), check=False).stdout
+    where = str(target.relative_to(repo)) if rel_path else "."
+    out = _git(repo, "log", f"-{limit}", "--format=%h%x09%an%x09%ad%x09%s", "--date=format:%Y-%m-%d %H:%M",
+               "--", where, check=False).stdout
     rows = [line.split("\t", 3) for line in out.splitlines() if line]
     return [{"commit": c, "author": a, "date": d, "message": m} for c, a, d, m in rows]
+
+
+# ---- personal folders ------------------------------------------------------------------
+
+def ensure_personal(user, lab) -> Path:
+    """Create (or re-secure) the user's personal folder: owner + the lab's PIs, never BSR.
+    Runs before every personal write, so PI changes take effect on the owner's next save."""
+    require_member(user, {lab.id: lab}, lab.id)
+    members = lab.dir / "members"
+    members.mkdir(exist_ok=True)
+    folder = knowledge.personal_dir(lab, user)
+    folder.mkdir(exist_ok=True)
+    try:
+        acl.secure_personal(folder, lab.pis, user)
+    except (acl.ACLError, OSError) as e:
+        raise HubError(f"Couldn't make your personal folder private, so nothing was saved. Please tell BSR. ({e})")
+    init_history(folder, ["_suggestions/"])
+    return folder
 
 
 # ---- lab details ---------------------------------------------------------------
@@ -137,49 +169,90 @@ def update_lab(user, lab_id, name: str, description: str, projects: list[dict]):
     data = {"name": name.strip(), "unix_group": lab.unix_group, "description": description.strip(), "projects": clean}
     _write_atomic(path, YAML_HEADER + yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
     _commit(user, [path], f"update {lab_id} lab details")
-    _audit(user, "update_lab", {"lab_id": lab_id})
+    _audit(user, "update_lab", {"lab_id": lab_id}, lab_id=lab_id)
 
 
 # ---- documents -----------------------------------------------------------------
 
-def _doc_path(lab, rel_path: str) -> Path:
+def _parse_doc_path(rel_path: str) -> tuple[str | None, str]:
+    """'guidance/x.md' -> (None, ...); 'members/ann/notes/x.md' -> ('ann', 'notes/x.md')."""
     parts = Path(rel_path).parts
+    if len(parts) == 4 and parts[0] == "members":
+        owner, inner = parts[1], "/".join(parts[2:])
+        if not USERNAME.match(owner):
+            raise HubError("Unknown personal folder.")
+        return owner, inner
+    return None, rel_path
+
+
+def _check_inner(inner: str, owner: str | None):
+    parts = Path(inner).parts
     ok = (
-        rel_path == "context.md"
-        or (len(parts) == 2 and parts[0] in CATEGORIES and parts[1].endswith(".md")
-            and SLUG.match(parts[1][:-3]))
+        (inner == "context.md" and owner is None)
+        or (len(parts) == 2 and parts[0] in CATEGORIES and parts[1].endswith(".md") and SLUG.match(parts[1][:-3]))
     )
     if not ok:
         raise HubError("Documents live at context.md or <category>/<name>.md (lowercase, dashes).")
-    return lab.dir / rel_path
+
+
+def _check_doc_visible(user, lab, rel_path) -> str | None:
+    owner, inner = _parse_doc_path(rel_path)
+    _check_inner(inner, owner)
+    if not can_see(user, lab, owner):
+        raise NotFound("That document doesn't exist (it may have been deleted).")
+    return owner
 
 
 def read_document_file(user, lab_id, rel_path) -> dict:
     lab = require_lab(user, knowledge.load_labs(), lab_id)
-    path = _doc_path(lab, rel_path)
+    owner = _check_doc_visible(user, lab, rel_path)
+    path = lab.dir / rel_path
     if not path.exists():
         raise NotFound("That document doesn't exist (it may have been deleted).")
-    return {"rel_path": rel_path, "text": path.read_text(), "can_edit": os.access(path, os.W_OK)}
+    can_edit = os.access(path, os.W_OK) and (owner is None or owner == user)
+    return {"rel_path": rel_path, "text": path.read_text(), "can_edit": can_edit,
+            "scope": "personal" if owner else "lab", "owner": owner}
+
+
+def _writable_doc(user, lab_id, rel_path):
+    labs = knowledge.load_labs()
+    owner, inner = _parse_doc_path(rel_path)
+    _check_inner(inner, owner)
+    if owner is None:
+        lab = require_lab_editor(user, labs, lab_id)
+        return lab, lab.dir / rel_path, None
+    lab = require_lab(user, labs, lab_id)
+    if owner != user:
+        raise Forbidden("Only the owner can change a personal document.")
+    folder = ensure_personal(user, lab)
+    return lab, folder / inner, owner
 
 
 def save_document(user, lab_id, rel_path, text: str):
-    lab = require_lab_editor(user, knowledge.load_labs(), lab_id)
-    path = _doc_path(lab, rel_path)
+    lab, path, owner = _writable_doc(user, lab_id, rel_path)
     if len(text) > 200_000:
         raise HubError("That document is very long (over 200,000 characters). Split it into several documents.")
-    _make_private_dir(path.parent, lab.dir)
+    if not path.parent.exists():
+        path.parent.mkdir()
+        if owner:
+            os.chmod(path.parent, 0o2700)
     _write_atomic(path, text if text.endswith("\n") else text + "\n")
-    _commit(user, [path], f"edit {lab_id}/{rel_path}")
-    _audit(user, "save_document", {"lab_id": lab_id, "rel_path": rel_path})
+    if owner:
+        acl.secure_personal(knowledge.personal_dir(lab, user), lab.pis, user)
+    _commit(user, [path], "edit personal document" if owner else f"edit {lab_id}/{rel_path}")
+    _audit(user, "save_document", {"lab_id": lab_id, "rel_path": rel_path}, lab_id=lab_id, personal=bool(owner))
 
 
-def create_document(user, lab_id, category: str, title: str) -> str:
-    lab = require_lab_editor(user, knowledge.load_labs(), lab_id)
+def create_document(user, lab_id, category: str, title: str, scope: str = "lab") -> str:
+    if scope not in SCOPES:
+        raise HubError("Choose who can see it: the lab, or just you (and your PI).")
     if category not in CATEGORIES:
         raise HubError(f"Pick one of: {', '.join(CATEGORIES)}.")
     if not title.strip():
         raise HubError("Give the document a title.")
-    rel_path = f"{category}/{slugify(title)}.md"
+    inner = f"{category}/{slugify(title)}.md"
+    rel_path = f"members/{user}/{inner}" if scope == "personal" else inner
+    lab = require_lab(user, knowledge.load_labs(), lab_id)
     if (lab.dir / rel_path).exists():
         raise HubError("A document with a very similar title already exists. Open that one, or choose another title.")
     template = (
@@ -191,31 +264,27 @@ def create_document(user, lab_id, category: str, title: str) -> str:
 
 
 def delete_document(user, lab_id, rel_path):
-    lab = require_lab_editor(user, knowledge.load_labs(), lab_id)
     if rel_path == "context.md":
         raise HubError("The lab context page can't be deleted; clear its text instead.")
-    path = _doc_path(lab, rel_path)
+    lab, path, owner = _writable_doc(user, lab_id, rel_path)
     if not path.exists():
         raise NotFound("That document doesn't exist.")
     path.unlink()
-    _commit(user, [path], f"delete {lab_id}/{rel_path}")
-    _audit(user, "delete_document", {"lab_id": lab_id, "rel_path": rel_path})
+    _commit(user, [path], f"delete {'personal document' if owner else lab_id + '/' + rel_path}")
+    _audit(user, "delete_document", {"lab_id": lab_id, "rel_path": rel_path}, lab_id=lab_id, personal=bool(owner))
 
 
-# ---- datasets ------------------------------------------------------------------
+# ---- datasets and code ---------------------------------------------------------------
 
-def _load_dataset_entries(lab) -> list[dict]:
-    path = lab.dir / "datasets.yaml"
+def _datasets_file(user, lab, scope) -> Path:
+    return (ensure_personal(user, lab) if scope == "personal" else lab.dir) / "datasets.yaml"
+
+
+def _load_entries(path: Path) -> list[dict]:
     if not path.exists():
         return []
     with open(path) as fh:
         return (yaml.safe_load(fh) or {}).get("datasets", [])
-
-
-def _save_dataset_entries(user, lab, entries, message):
-    path = lab.dir / "datasets.yaml"
-    _write_atomic(path, YAML_HEADER + yaml.safe_dump({"datasets": entries}, sort_keys=False, allow_unicode=True))
-    _commit(user, [path], message)
 
 
 def check_dataset_path(user, path_str: str) -> dict:
@@ -236,14 +305,40 @@ def check_dataset_path(user, path_str: str) -> dict:
     return {"path": real, "is_dir": os.path.isdir(real)}
 
 
+def _split_dataset_id(user, lab, hub_id: str) -> tuple[str, str]:
+    """Hub ID -> (scope, short id), checking the user may change it."""
+    owner = knowledge.owner_of(hub_id)
+    short = hub_id.rsplit("/", 1)[-1]
+    if not hub_id.startswith(f"ds:{lab.id}/"):
+        raise NotFound("That dataset isn't registered in this lab.")
+    if owner is None:
+        require_lab_editor(user, {lab.id: lab}, lab.id)
+        return "lab", short
+    if owner != user:
+        raise Forbidden("Only the owner can change a personal item.")
+    return "personal", short
+
+
 def save_dataset(user, lab_id, entry: dict, original_id: str | None = None) -> str:
-    lab = require_lab_editor(user, knowledge.load_labs(), lab_id)
+    """Register (or update) data or code. entry['scope']: 'lab' (all lab members) or 'personal'."""
+    lab = require_lab(user, knowledge.load_labs(), lab_id)
+    if original_id:
+        scope, original_short = _split_dataset_id(user, lab, original_id)
+    else:
+        scope, original_short = entry.get("scope", "lab"), None
+        if scope not in SCOPES:
+            raise HubError("Choose who can see it: the lab, or just you (and your PI).")
+        if scope == "lab":
+            require_lab_editor(user, {lab.id: lab}, lab.id)
     title = (entry.get("title") or "").strip()
     if not title:
-        raise HubError("Give the dataset a short title, e.g. 'Mouse WGS, 12 samples'.")
-    ds_id = (entry.get("id") or original_id or slugify(title)).strip()
+        raise HubError("Give it a short title, e.g. 'Mouse WGS, 12 samples' or 'RNA-seq analysis scripts'.")
+    ds_id = (entry.get("id") or original_short or slugify(title)).strip()
     if not SLUG.match(ds_id):
         raise HubError("The short ID should use lowercase letters, numbers and dashes.")
+    kind = entry.get("kind", "data")
+    if kind not in KINDS:
+        raise HubError("Choose whether this is data or code.")
     checked = check_dataset_path(user, entry.get("path", ""))
     project = entry.get("project") or None
     if project and project not in {p.id for p in lab.projects}:
@@ -252,15 +347,13 @@ def save_dataset(user, lab_id, entry: dict, original_id: str | None = None) -> s
     if sensitivity not in ("standard", "sensitive"):
         raise HubError("Sensitivity must be 'standard' or 'sensitive'.")
 
-    entries = _load_dataset_entries(lab)
-    existing = next((e for e in entries if e["id"] == (original_id or ds_id)), None)
-    if existing is None and any(e["id"] == ds_id for e in entries):
-        raise HubError(f"A dataset with the ID '{ds_id}' already exists in this lab.")
-    if existing and ds_id != original_id and any(e["id"] == ds_id for e in entries):
-        raise HubError(f"A dataset with the ID '{ds_id}' already exists in this lab.")
-
+    path = _datasets_file(user, lab, scope)
+    entries = _load_entries(path)
+    existing = next((e for e in entries if e["id"] == (original_short or ds_id)), None)
+    if any(e["id"] == ds_id for e in entries if e is not existing):
+        raise HubError(f"Something with the ID '{ds_id}' is already registered here.")
     new = {
-        "id": ds_id, "title": title, "project": project, "path": checked["path"],
+        "id": ds_id, "title": title, "kind": kind, "project": project, "path": checked["path"],
         "assay": entry.get("assay", ""), "description": (entry.get("description") or "").strip(),
         "sensitivity": sensitivity,
         "registered_by": existing["registered_by"] if existing else user,
@@ -270,19 +363,44 @@ def save_dataset(user, lab_id, entry: dict, original_id: str | None = None) -> s
         entries[entries.index(existing)] = new
     else:
         entries.append(new)
-    _save_dataset_entries(user, lab, entries, f"{'update' if existing else 'register'} dataset {lab_id}/{ds_id}")
-    _audit(user, "save_dataset", {"lab_id": lab_id, "dataset": ds_id})
-    return f"ds:{lab_id}/{ds_id}"
+    _write_atomic(path, YAML_HEADER + yaml.safe_dump({"datasets": entries}, sort_keys=False, allow_unicode=True))
+    if scope == "personal":
+        acl.secure_personal(knowledge.personal_dir(lab, user), lab.pis, user)
+    verb = "update" if existing else "register"
+    _commit(user, [path], f"{verb} {kind} {'(personal)' if scope == 'personal' else lab_id + '/' + ds_id}")
+    _audit(user, "save_dataset", {"lab_id": lab_id, "dataset": ds_id, "kind": kind}, lab_id=lab_id,
+           personal=scope == "personal")
+    return f"ds:{lab_id}/~{user}/{ds_id}" if scope == "personal" else f"ds:{lab_id}/{ds_id}"
 
 
-def delete_dataset(user, lab_id, ds_id):
-    lab = require_lab_editor(user, knowledge.load_labs(), lab_id)
-    entries = _load_dataset_entries(lab)
-    remaining = [e for e in entries if e["id"] != ds_id]
+def delete_dataset(user, lab_id, hub_id):
+    lab = require_lab(user, knowledge.load_labs(), lab_id)
+    scope, short = _split_dataset_id(user, lab, hub_id)
+    path = _datasets_file(user, lab, scope)
+    entries = _load_entries(path)
+    remaining = [e for e in entries if e["id"] != short]
     if len(remaining) == len(entries):
-        raise NotFound("That dataset isn't registered.")
-    _save_dataset_entries(user, lab, remaining, f"unregister dataset {lab_id}/{ds_id}")
-    _audit(user, "delete_dataset", {"lab_id": lab_id, "dataset": ds_id})
+        raise NotFound("That isn't registered.")
+    _write_atomic(path, YAML_HEADER + yaml.safe_dump({"datasets": remaining}, sort_keys=False, allow_unicode=True))
+    _commit(user, [path], f"unregister {'(personal)' if scope == 'personal' else lab_id + '/' + short}")
+    _audit(user, "delete_dataset", {"lab_id": lab_id, "dataset": short}, lab_id=lab_id, personal=scope == "personal")
+
+
+def datasets_for_portal(user, lab_id) -> list[dict]:
+    """Like the model's view, plus the folder path (people registered it) and edit rights."""
+    lab = require_lab(user, knowledge.load_labs(), lab_id)
+    out = []
+    for d in knowledge.load_datasets(lab).values():
+        if not can_see(user, lab, d.owner):
+            continue
+        can_edit = (d.owner == user) if d.owner else os.access(lab.dir, os.W_OK)
+        out.append({
+            "id": d.id, "short_id": d.short_id.split("/")[-1], "title": d.title, "kind": d.kind,
+            "project": d.project, "assay": d.assay, "description": d.description, "sensitivity": d.sensitivity,
+            "scope": "personal" if d.owner else "lab", "owner": d.owner, "registered_by": d.registered_by,
+            "registered_on": d.registered_on, "path": d.path, "can_edit": can_edit,
+        })
+    return out
 
 
 def browse(user, path_str: str | None) -> dict:
@@ -322,7 +440,7 @@ def browse(user, path_str: str | None) -> dict:
 
 def _require_bsr(user):
     if not is_bsr(user):
-        raise Forbidden("Only BSR staff can change the workflow registry.")
+        raise Forbidden("Only BSR staff can do this.")
 
 
 def _workflows_path() -> Path:
@@ -374,60 +492,126 @@ def delete_workflow(user, wf_id):
 
 # ---- inbox: Claude's suggestions and BSR review tickets -------------------------
 
+def _suggestion_files(user) -> list[tuple[Path, dict, bool]]:
+    """(file, record, can_change) for every suggestion this user may see."""
+    out = []
+    for lab in knowledge.load_labs().values():
+        if not can_access_lab(user, lab):
+            continue
+        folders = [(lab.dir / "_suggestions", None)]
+        folders += [(d / "_suggestions", owner) for owner, d in knowledge.member_dirs(lab)]
+        for folder, owner in folders:
+            if not can_see(user, lab, owner):
+                continue
+            try:
+                files = sorted(folder.glob("*.yaml"))
+            except PermissionError:
+                continue
+            for f in files:
+                try:
+                    rec = yaml.safe_load(f.read_text()) or {}
+                except OSError:
+                    continue
+                rec["scope"] = "personal" if owner else "lab"
+                can_change = (owner == user) if owner else os.access(f, os.W_OK)
+                out.append((f, rec, can_change))
+    return out
+
+
 def inbox(user) -> dict:
-    labs = {lid for lid, lab in knowledge.load_labs().items() if can_access_lab(user, lab)}
-    conn = store.connect()
-    try:
-        marks = ",".join("?" * len(labs)) or "''"
-        sugg = conn.execute(f"SELECT * FROM suggestions WHERE lab_id IN ({marks}) ORDER BY id DESC", tuple(labs)).fetchall()
-        # Review tickets: BSR sees all of them; others see the ones they raised.
-        if is_bsr(user):
-            rev = conn.execute("SELECT * FROM reviews ORDER BY id DESC").fetchall()
-        else:
-            rev = conn.execute("SELECT * FROM reviews WHERE user=? ORDER BY id DESC", (user,)).fetchall()
-        return {"suggestions": [dict(r) for r in sugg], "reviews": [dict(r) for r in rev]}
-    finally:
-        conn.close()
+    suggestions = [rec | {"can_change": ok} for _, rec, ok in _suggestion_files(user)]
+    suggestions.sort(key=lambda r: r.get("ts", ""), reverse=True)
+    statuses = store.review_statuses() if is_bsr(user) else {}
+    reviews = store.read_events("reviews", only_user=None if is_bsr(user) else user)
+    for r in reviews:
+        r["key"] = f"{r['user']}:{r['id']}"
+        r["status"] = statuses.get((r["user"], r["id"]), "open" if is_bsr(user) else "sent to BSR")
+    reviews.sort(key=lambda r: r["ts"], reverse=True)
+    return {"suggestions": suggestions, "reviews": reviews}
 
 
-def set_suggestion_status(user, sid: int, status: str):
+def set_suggestion_status(user, sid: str, status: str):
     if status not in ("pending", "applied", "dismissed"):
         raise HubError("Unknown status.")
-    conn = store.connect()
-    try:
-        row = conn.execute("SELECT lab_id FROM suggestions WHERE id=?", (sid,)).fetchone()
-        if row is None:
-            raise NotFound("No such suggestion.")
-        require_lab_editor(user, knowledge.load_labs(), row["lab_id"])
-        with conn:
-            conn.execute("UPDATE suggestions SET status=? WHERE id=?", (status, sid))
-    finally:
-        conn.close()
-    _audit(user, "suggestion_status", {"id": sid, "status": status})
+    for f, rec, can_change in _suggestion_files(user):
+        if rec.get("id") == sid:
+            if not can_change:
+                raise Forbidden("You can't change this suggestion.")
+            rec.pop("can_change", None)
+            scope = rec.pop("scope", "lab")
+            rec["status"] = status
+            _write_atomic(f, yaml.safe_dump(rec, sort_keys=False, allow_unicode=True))
+            _audit(user, "suggestion_status", {"id": sid, "status": status}, lab_id=rec.get("lab_id"),
+                   personal=scope == "personal")
+            return
+    raise NotFound("No such suggestion.")
 
 
-def set_review_status(user, rid: int, status: str):
+def set_review_status(user, key: str, status: str):
     if status not in ("open", "in progress", "closed"):
         raise HubError("Unknown status.")
     _require_bsr(user)
-    conn = store.connect()
+    owner, _, rid = key.partition(":")
+    if not rid.isdigit():
+        raise NotFound("No such review ticket.")
+    conn = store.bsr_connect()
     try:
         with conn:
-            if conn.execute("UPDATE reviews SET status=? WHERE id=?", (status, rid)).rowcount == 0:
-                raise NotFound("No such review ticket.")
+            conn.execute("INSERT OR REPLACE INTO review_status VALUES (?,?,?,?,?)",
+                         (owner, int(rid), status, user, store.now()))
     finally:
         conn.close()
-    _audit(user, "review_status", {"id": rid, "status": status})
+    _audit(user, "review_status", {"ticket": key, "status": status})
 
 
-def activity(user, limit=100) -> list[dict]:
-    """Audit log: BSR sees everyone's activity, other users see their own."""
-    conn = store.connect()
+def activity(user, limit=200) -> list[dict]:
+    """Usage log: BSR sees every lab's (shared by connecting); others see their own."""
+    rows = store.read_events("audit", only_user=None if is_bsr(user) else user)
+    rows.sort(key=lambda r: r["ts"], reverse=True)
+    return rows[:limit]
+
+
+# ---- connecting Claude -----------------------------------------------------------
+
+def _laptop_hostname() -> str:
+    """The name laptops on the CSHL network use: prefer <host>.cshl.edu over internal cluster names."""
+    short = socket.gethostname().split(".")[0]
     try:
-        if is_bsr(user):
-            rows = conn.execute("SELECT * FROM audit ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-        else:
-            rows = conn.execute("SELECT * FROM audit WHERE user=? ORDER BY id DESC LIMIT ?", (user, limit)).fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        conn.close()
+        socket.gethostbyname(f"{short}.cshl.edu")
+        return f"{short}.cshl.edu"
+    except OSError:
+        return socket.getfqdn()
+
+
+def portal_port(username: str) -> int:
+    """Each person's portal gets its own fixed port (from their uid), so the one-line start
+    command works and two people's portals on the same login node never collide."""
+    return 20000 + pwd.getpwnam(username).pw_uid % 40000
+
+
+def connect_info(user, for_user: str | None = None) -> dict:
+    """Setup instructions for `for_user` (default: the signed-in user). BSR uses this to prepare
+    a researcher's setup; it contains only their username and public paths, nothing private."""
+    target = (for_user or user).strip()
+    if not USERNAME.fullmatch(target):
+        raise HubError("That doesn't look like a cluster username (e.g. jsmith).")
+    try:
+        port = portal_port(target)
+    except KeyError:
+        raise NotFound(f"There's no cluster account called '{target}'.")
+    host = config.CONNECT_HOST or _laptop_hostname()
+    command = str(config.HUB_HOME / "env" / "bin" / "codespringhub")
+    return {
+        "user": target, "host": host, "command": command,
+        "claude_desktop": {"mcpServers": {"codespringhub": {
+            "command": "ssh",
+            "args": ["-T", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=30", f"{target}@{host}", command],
+        }}},
+        "portal_port": port,
+        "portal_command": f"ssh -t -L {port}:localhost:{port} {target}@{host} {config.HUB_HOME / 'portal.sh'}",
+        "notice": (
+            "Connecting means your CodeSpringHub usage (which tools Claude uses, when, and their inputs; "
+            "not your conversation) is shared with BSR. Requests about your personal items are logged "
+            "without details."
+        ),
+    }

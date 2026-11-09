@@ -80,7 +80,8 @@ export type Me = {
   assays: string[];
 };
 export type Project = { id: string; name: string; description: string };
-export type DocInfo = { id: string; title: string; category: string; rel_path: string };
+export type Scope = "lab" | "personal";
+export type DocInfo = { id: string; title: string; category: string; rel_path: string; scope: Scope; owner: string | null };
 export type Lab = {
   lab_id: string;
   name: string;
@@ -89,13 +90,19 @@ export type Lab = {
   datasets: number;
   documents: number;
   can_edit: boolean;
+  role: "member" | "pi" | "bsr";
   unix_group?: string;
+  pis?: string[];
   documents_list?: DocInfo[];
 };
 export type Dataset = {
   id: string;
   short_id: string;
   title: string;
+  kind: "data" | "code";
+  scope: Scope;
+  owner: string | null;
+  can_edit: boolean;
   project: string | null;
   assay: string;
   description: string;

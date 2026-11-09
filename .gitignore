@@ -8,3 +8,11 @@ var/
 __pycache__/
 *.egg-info/
 .pytest_cache/
+
+# Lab knowledge never goes to GitHub: only BSR's own knowledge and the workflow list do.
+# Each pilot lab keeps its history in its own repository inside knowledge/<lab>/ (on /grid only).
+knowledge/*/
+!knowledge/bsr/
+knowledge/*/members/
+knowledge/*/_suggestions/
+knowledge/roles.yaml

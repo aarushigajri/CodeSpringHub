@@ -245,3 +245,17 @@ pre.result { background: var(--bg); border: 1px solid var(--border); border-radi
 .scroll-x { overflow-x: auto; }
 table.compact th, table.compact td { padding: 4px 8px; font-size: 0.82rem; font-family: var(--mono); text-transform: none; letter-spacing: 0; }
 details summary { cursor: pointer; margin-top: 10px; }
+
+/* ---- connect page, badges ---- */
+.page.narrow { max-width: 860px; }
+.connect-steps { padding-left: 22px; }
+.connect-steps > li { margin-bottom: 26px; }
+.connect-steps h3 { margin-bottom: 4px; }
+.codeblock { position: relative; margin: 8px 0; }
+.codeblock pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 70px 10px 12px; overflow-x: auto; font-size: 0.84rem; margin: 0; white-space: pre-wrap; word-break: break-all; }
+.codeblock .copy { position: absolute; top: 6px; right: 6px; padding: 3px 10px; font-size: 0.8rem; }
+.badge.info { background: var(--accent-soft); color: var(--accent); }
+.choice.disabled { opacity: 0.5; }
+h3 { margin-top: 8px; }
+.who-field { max-width: 420px; margin: 16px 0 8px; }
+.who-field label { margin-bottom: 4px; }

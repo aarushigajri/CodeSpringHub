@@ -19,7 +19,7 @@ export default function DocumentEditor({ ctx, labId, relPath, suggestion }: {
       const d = await get<{ text: string; can_edit: boolean }>(`/api/labs/${labId}/docs/${relPath}`);
       setText(d.text);
       setSaved(d.text);
-      setCanEdit(d.can_edit && !!lab?.can_edit);
+      setCanEdit(d.can_edit);
       setHistory(await get(`/api/labs/${labId}/history?path=${encodeURIComponent(relPath)}`));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -52,7 +52,10 @@ export default function DocumentEditor({ ctx, labId, relPath, suggestion }: {
   }
 
   const backHref = relPath === "context.md" ? `#/lab/${labId}/about` : `#/lab/${labId}/documents`;
-  const docId = `doc:${labId}/${relPath.replace(/\.md$/, "")}`;
+  const personalMatch = relPath.match(/^members\/([^/]+)\/(.+)\.md$/);
+  const docId = personalMatch
+    ? `doc:${labId}/~${personalMatch[1]}/${personalMatch[2]}`
+    : `doc:${labId}/${relPath.replace(/\.md$/, "")}`;
 
   if (error) return <div className="page"><a href={backHref}>← Back</a><div className="error-box">{error}</div></div>;
   if (text === null) return <div className="page loading">Loading…</div>;
@@ -63,7 +66,10 @@ export default function DocumentEditor({ ctx, labId, relPath, suggestion }: {
       <div className="page-head">
         <div>
           <h1>{text.match(/^# (.+)$/m)?.[1] ?? relPath}</h1>
-          <p className="muted">Claude refers to this as <code>{docId}</code></p>
+          <p className="muted">
+            Claude refers to this as <code>{docId}</code>
+            {personalMatch && <> · <span className="badge warn">Personal</span> only {personalMatch[1] === ctx.me.user ? "you" : personalMatch[1]} and the lab's PI can see it</>}
+          </p>
         </div>
       </div>
 

@@ -13,6 +13,7 @@ Run as a web service:          codespringhub --http --port 8765
 import argparse
 import functools
 import json
+import sys
 
 from mcp.server.mcpserver import MCPServer
 
@@ -27,6 +28,10 @@ How to work with it:
 - Start with list_labs, then get_lab_context for the relevant lab before giving lab-specific advice.
 - Use search_knowledge to find protocols, BSR guidance and lab notes; cite document IDs you relied on.
 - Refer to data only by Hub IDs (ds:...). You cannot see file paths and should not ask for them.
+- Resources are either lab-shared or personal (IDs containing "/~user/", visible only to that
+  member and their PI). Never repeat personal content to anyone else or into lab-shared documents.
+- Registered resources are "data" (you get summaries only) or "code" (lab scripts and pipelines:
+  read the source with read_code_file to explain, debug or adapt it).
 - Before proposing a pipeline, call list_workflows. Prefer a BSR workflow whose status is
   "validated"; a "candidate" workflow is BSR-recommended but not yet signed off, so say so.
 - If the request is novel, uncertain, high-impact, or no BSR workflow fits, say that BSR
@@ -34,6 +39,8 @@ How to work with it:
 - Text marked TODO in a document has not been written yet; do not treat it as guidance.
 - If the user tells you something the lab context should remember, offer suggest_context_edit.
   A person reviews every suggestion; you cannot change the context yourself.
+- At the start of a conversation that uses the Hub, tell the user once that CodeSpringHub usage
+  (which tools are used and their inputs, not the conversation) is shared with BSR.
 """
 
 mcp = MCPServer(name="CodeSpringHub", instructions=INSTRUCTIONS, version="0.1.0")
@@ -45,38 +52,66 @@ def hub_tool(fn):
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         user = current_user()
-        conn = store.connect()
+        lab_id = _lab_of(kwargs)
         try:
             result = fn(*args, **kwargs)
-            text = result if isinstance(result, str) else json.dumps(result, default=str)
-            if len(text) > config.MAX_OUTPUT_CHARS:
-                result = text[: config.MAX_OUTPUT_CHARS] + "\n… [truncated by CodeSpringHub output limit]"
-                text = result
-            store.log_call(conn, user, fn.__name__, kwargs, True, len(text))
-            return result
         except Exception as e:
-            store.log_call(conn, user, fn.__name__, kwargs, False, 0, str(e))
+            _log(user, fn.__name__, kwargs, False, 0, str(e), lab_id=lab_id)
             raise
-        finally:
-            conn.close()
+        text = result if isinstance(result, str) else json.dumps(result, default=str)
+        if len(text) > config.MAX_OUTPUT_CHARS:
+            result = text[: config.MAX_OUTPUT_CHARS] + "\n… [truncated by CodeSpringHub output limit]"
+            text = result
+        _log(user, fn.__name__, kwargs, True, len(text), lab_id=lab_id)
+        return result
 
     return mcp.tool()(wrapper)
+
+
+def _log(*args, **kwargs):
+    """Usage logging is best-effort: a broken log never takes Claude's answer down with it.
+    `hub doctor` reports why logging fails."""
+    try:
+        store.log_call(*args, **kwargs)
+    except Exception as e:  # noqa: BLE001
+        print(f"CodeSpringHub: usage log not written ({e})", file=sys.stderr)
+
+
+def _lab_of(kwargs) -> str | None:
+    """Which lab a call is about, for per-lab usage statistics."""
+    if kwargs.get("lab_id"):
+        return kwargs["lab_id"]
+    for key in ("dataset_id", "resource_id", "doc_id"):
+        value = kwargs.get(key)
+        if isinstance(value, str) and ":" in value:
+            return value.split(":", 1)[1].split("/", 1)[0]
+    return None
+
+
+def _note():
+    try:
+        store.note_once("usage_notice")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ---- identity and labs ---------------------------------------------------------
 
 @hub_tool
 def whoami() -> dict:
-    """Show which CSHL user this Hub session is acting as and which labs they can use."""
+    """Show which CSHL user this Hub session is acting as, which labs they can use, and how
+    their usage is shared with BSR."""
     user = current_user()
-    return {"user": user, "labs": sorted(hub.accessible_labs(user))}
+    _note()
+    return {"user": user, "labs": sorted(hub.accessible_labs(user)), "usage_notice": hub.USAGE_NOTICE}
 
 
 @hub_tool
-def list_labs() -> list[dict]:
-    """List the labs you can access through CodeSpringHub, with their projects.
+def list_labs() -> dict:
+    """List the labs you can access through CodeSpringHub, with their projects and your role.
     Call this first to find the lab_id other tools need."""
-    return hub.list_labs(current_user())
+    _note()
+    return {"labs": hub.list_labs(current_user()), "usage_notice": hub.USAGE_NOTICE}
 
 
 @hub_tool
@@ -93,7 +128,8 @@ def get_lab_context(lab_id: str) -> str:
 
 @hub_tool
 def search_knowledge(query: str, lab_id: str | None = None) -> list[dict]:
-    """Keyword search over lab context, BSR guidance, protocols and notes you can access.
+    """Keyword search over lab context, BSR guidance, protocols and notes you can access
+    (lab-shared, plus your own personal documents).
     Optionally limit to one lab_id. Returns document IDs with matching snippets."""
     return hub.search(current_user(), query, lab_id)
 
@@ -109,21 +145,24 @@ def suggest_context_edit(lab_id: str, suggestion: str, doc_id: str | None = None
     """Propose an addition or correction to a lab's context or a knowledge document.
     Nothing changes immediately: the suggestion is queued for a person at the lab/BSR
     to review and apply. Use when the user shares something the Hub should remember."""
-    sid = hub.suggest_edit(current_user(), lab_id, suggestion, doc_id)
-    return f"Suggestion #{sid} queued for review by {lab_id}. It is not live until a person applies it."
+    hub.suggest_edit(current_user(), lab_id, suggestion, doc_id)
+    who = "the document's owner" if doc_id and "/~" in doc_id else f"the {lab_id} lab"
+    return f"Suggestion saved for {who} to review. It is not live until a person applies it."
 
 
 # ---- registered data -----------------------------------------------------------
 
 @hub_tool
 def list_datasets(lab_id: str, project: str | None = None) -> list[dict]:
-    """List datasets registered in a lab (optionally one project). Returns Hub dataset IDs."""
+    """List data and code resources registered in a lab (optionally one project): lab-shared ones
+    plus your personal ones. Returns Hub IDs, each with kind "data" or "code"."""
     return hub.list_datasets(current_user(), lab_id, project)
 
 
 @hub_tool
 def describe_dataset(dataset_id: str) -> dict:
-    """Show a registered dataset's metadata and the files (assets) inside it, with sizes."""
+    """Show a registered resource's metadata and the files (assets) inside it, with sizes.
+    For code resources, also the git branch and last commit if it is a repository."""
     return hub.describe_dataset(current_user(), dataset_id)
 
 
@@ -133,6 +172,14 @@ def inspect_asset(dataset_id: str, asset: str) -> dict:
     tables give columns, types, row count and a short preview; FASTQ gives read-length
     and GC statistics; text files give their first lines. `asset` is the name from describe_dataset."""
     return hub.inspect_asset(current_user(), dataset_id, asset)
+
+
+@hub_tool
+def read_code_file(resource_id: str, path: str) -> str:
+    """Read one source file (script, notebook, pipeline, config) in full from a registered
+    *code* resource, e.g. read_code_file('ds:lab/rnaseq-scripts', 'R/de_analysis.R').
+    `path` is the file name from describe_dataset. Data resources only give summaries."""
+    return hub.read_code_file(current_user(), resource_id, path)
 
 
 @hub_tool

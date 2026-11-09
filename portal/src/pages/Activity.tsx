@@ -3,7 +3,7 @@ import { Ctx } from "../App";
 import { get } from "../api";
 import { Badge, Empty, Help } from "../components";
 
-type Row = { id: number; ts: string; user: string; tool: string; args: string; ok: number; chars_out: number; error: string | null };
+type Row = { id: number; ts: string; user: string; lab_id: string | null; tool: string; args: string; ok: number; chars_out: number; error: string | null };
 
 export default function Activity({ ctx }: { ctx: Ctx }) {
   const [rows, setRows] = useState<Row[] | null>(null);
@@ -19,8 +19,10 @@ export default function Activity({ ctx }: { ctx: Ctx }) {
     <div className="page">
       <h1>Activity</h1>
       <Help>
-        Every question Claude asked the Hub, and every change made in this portal.{" "}
-        {ctx.me.is_bsr ? "As BSR you see everyone's activity." : "You see your own activity."}
+        Every request Claude made to the Hub, and every change made in this portal.{" "}
+        {ctx.me.is_bsr
+          ? "As BSR you see every lab's usage (shared by connecting). Requests about personal items show no details."
+          : "You see your own activity. BSR can see it too; requests about your personal items show them no details."}
       </Help>
       <div className="segmented">
         {(["all", "claude", "portal"] as const).map((f) => (
@@ -33,14 +35,17 @@ export default function Activity({ ctx }: { ctx: Ctx }) {
       {rows && shown.length === 0 && <Empty title="No activity yet." />}
       {shown.length > 0 && (
         <table>
-          <thead><tr><th>When (UTC)</th><th>Who</th><th>What</th><th>Details</th><th>Result</th></tr></thead>
+          <thead><tr><th>When (UTC)</th><th>Who</th><th>Lab</th><th>What</th><th>Details</th><th>Result</th></tr></thead>
           <tbody>
             {shown.map((r) => (
-              <tr key={r.id}>
+              <tr key={`${r.user}-${r.id}`}>
                 <td className="small">{r.ts.slice(0, 19).replace("T", " ")}</td>
                 <td>{r.user}</td>
+                <td>{r.lab_id ?? "–"}</td>
                 <td><code>{r.tool.replace(/^portal:/, "")}</code>{r.tool.startsWith("portal:") && <Badge kind="muted">portal</Badge>}</td>
-                <td className="small muted args">{r.args === "{}" ? "" : r.args}</td>
+                <td className="small muted args">
+                  {r.args.includes("withheld") ? <span className="badge muted">personal: details withheld</span> : r.args === "{}" ? "" : r.args}
+                </td>
                 <td>
                   {r.ok ? <Badge kind="ok">ok</Badge> : <Badge kind="err">failed</Badge>}
                   {!r.ok && r.error && <div className="small muted">{r.error.replace(/^Error executing tool \w+: /, "")}</div>}

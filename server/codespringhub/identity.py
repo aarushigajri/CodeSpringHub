@@ -31,10 +31,10 @@ class LocalLinkAuth:
         self.user = getpass.getuser()
         # Each person's link lives in their own home folder (700/600): the Hub folder is
         # shared by BSR, and one person's link must never be readable by another.
-        path = config.TOKEN_DIR / "portal-token"
+        path = config.USER_DIR / "portal-token"
         if new_link or not path.exists():
-            config.TOKEN_DIR.mkdir(parents=True, exist_ok=True)
-            os.chmod(config.TOKEN_DIR, 0o700)
+            config.USER_DIR.mkdir(parents=True, exist_ok=True)
+            os.chmod(config.USER_DIR, 0o700)
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w") as fh:
                 fh.write(secrets.token_urlsafe(32))
