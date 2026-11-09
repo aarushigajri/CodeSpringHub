@@ -35,6 +35,8 @@ def cmd_check(_):
         if _open_to_others(lab.dir):
             print(f"[{lab.id}] {lab.dir} is accessible to all cluster users (fix: chmod 2750)")
             problems += 1
+        if not lab.dir.stat().st_mode & 0o020:
+            print(f"[{lab.id}] note: lab members can view but not edit this lab (to allow editing: chmod -R g+w)")
         dir_group = grp.getgrgid(lab.dir.stat().st_gid).gr_name
         if dir_group != lab.unix_group:
             print(f"[{lab.id}] folder group is '{dir_group}', expected '{lab.unix_group}' (fix: chgrp -R)")

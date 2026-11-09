@@ -30,7 +30,8 @@ def test_requires_the_private_link(hub):
     client = TestClient(create_app(LocalLinkAuth(new_link=True)))
     assert client.get("/api/me").status_code == 401
     assert client.get("/api/me", headers={"Authorization": "Bearer wrong"}).status_code == 401
-    assert (config.VAR_DIR / "portal-token").stat().st_mode & 0o777 == 0o600
+    assert (config.TOKEN_DIR / "portal-token").stat().st_mode & 0o777 == 0o600
+    assert config.TOKEN_DIR.stat().st_mode & 0o777 == 0o700
 
 
 def test_labs_and_permissions(api):
@@ -125,3 +126,24 @@ def test_inbox_flow(api):
 def test_tool_list_for_try_it(api):
     names = {t["name"] for t in api.get("/api/tools").json()}
     assert {"get_lab_context", "query_table", "request_bsr_review"} <= names
+
+
+def test_save_works_for_a_user_without_git_setup(api, hub, monkeypatch):
+    # Simulates a BSR member who has never run `git config user.name`.
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    api.put("/api/labs/bsr/docs/context.md", json={"text": "# BSR\n\nNew text.\n"}).raise_for_status()
+    assert git_log(hub)[0].endswith("portal: edit bsr/context.md")
+
+
+def test_git_failure_never_blocks_a_save(api, hub):
+    # Break the repository: the save must still succeed and the problem is recorded.
+    (hub / "hub" / ".git" / "HEAD").write_text("garbage")
+    r = api.put("/api/labs/bsr/docs/context.md", json={"text": "# BSR\n\nSaved anyway.\n"})
+    assert r.status_code == 200
+    assert "Saved anyway" in (config.KNOWLEDGE_DIR / "bsr" / "context.md").read_text()
+    assert "portal:history_not_recorded" in [a["tool"] for a in api.get("/api/activity").json()]
+
+
+def test_new_files_are_group_editable(api):
+    rel = api.post("/api/labs/bsr/docs", json={"category": "notes", "title": "Shared note"}).json()["rel_path"]
+    assert (config.KNOWLEDGE_DIR / "bsr" / rel).stat().st_mode & 0o777 == 0o660

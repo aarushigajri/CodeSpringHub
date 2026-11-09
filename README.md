@@ -18,7 +18,9 @@ It prints two things:
 1. an `ssh -N -L …` command. Run it **on your laptop** and leave it open.
 2. a private link (`http://localhost:8780/#token=…`). Open it in your laptop's browser.
 
-The link is personal: anyone holding it can use the portal as you, so don't share it.
+The link is personal: anyone holding it can use the portal as you, so don't share it. Every BSR
+member runs their own copy (`portal.sh` from the same folder) and gets their own link, kept in
+`~/.codespringhub/` in their home folder. If someone else is using port 8780, the portal picks a free port.
 `./portal.sh --new-link` makes the old link stop working. Stop the portal with Ctrl+C.
 
 In the portal:
@@ -124,7 +126,7 @@ npx @modelcontextprotocol/inspector ./env/bin/codespringhub
   registered folder (no `../` or symlink escapes), and must be readable by you on the cluster.
 - Every response is size-capped. Datasets marked `sensitive` give summaries only.
 - Every tool call is written to the audit log.
-- On disk, each `knowledge/<lab>/` folder is readable only by that lab's group, and `var/` (the audit
+- On disk, each `knowledge/<lab>/` folder can be read and edited only by that lab's group, and `var/` (the audit
   log) only by BSR. `hub check` flags anything looser. Git doesn't keep permissions, so run
   `hub check` after any fresh clone.
 - HTTP mode is refused unless you pass `--dev-no-auth`, because there's no login until Phase 2.

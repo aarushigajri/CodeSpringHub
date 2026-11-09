@@ -52,6 +52,7 @@ def hub(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "VAR_DIR", home / "var")
     monkeypatch.setattr(config, "DB_PATH", home / "var" / "hub.db")
     monkeypatch.setattr(config, "BROWSE_ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(config, "TOKEN_DIR", tmp_path / "home" / ".codespringhub")
     # The tester counts as BSR staff (for workflow edits) via their first group.
     monkeypatch.setattr(permissions, "BSR_GROUP", MY_GROUP)
     return tmp_path

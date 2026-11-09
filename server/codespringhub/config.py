@@ -16,6 +16,9 @@ KNOWLEDGE_DIR = HUB_HOME / "knowledge"
 VAR_DIR = HUB_HOME / "var"
 DB_PATH = VAR_DIR / "hub.db"
 
+# Per-person private files (the portal link). Never inside the shared Hub folder.
+TOKEN_DIR = Path(os.environ.get("CODESPRINGHUB_TOKEN_DIR", Path.home() / ".codespringhub"))
+
 # The folder picker and dataset registration are limited to these roots.
 BROWSE_ROOTS = [r for r in os.environ.get("CODESPRINGHUB_BROWSE_ROOTS", "/grid").split(":") if r]
 

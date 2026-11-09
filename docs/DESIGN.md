@@ -78,7 +78,8 @@ The hierarchy follows the CodeSpringSuite deck: **Lab → Project → Resource (
   both call the same service layer: `hub.py` for reads and `editing.py` for writes. Every service
   function takes the acting `user` explicitly, so permissions are identical however a request arrives.
 - **Built for HTTPS.** The only part tied to "local" is `identity.py`, which turns a request's bearer
-  token into a username. Today that token is a private link created at start-up (mode 600 in `var/`).
+  token into a username. Today that token is a private link created at start-up and kept in the user's own home folder
+  (`~/.codespringhub/portal-token`, 700/600), so each BSR member running the portal has their own link.
   In Phase 2 it becomes a CSHL SSO token, and nothing downstream changes. The acting user reaches the
   MCP tools through a context variable (`permissions.acting_as`), which a test verifies. The same
   mechanism will carry the SSO user into the HTTPS MCP endpoint.
@@ -339,8 +340,10 @@ These are deliberate simplifications, or gaps found while writing this document:
    | Path | Mode | Who can read |
    |---|---|---|
    | `knowledge/` | `2751` | others may pass through but not list it |
-   | `knowledge/workflows.yaml` | `644` | everyone (global registry) |
-   | `knowledge/<lab>/` | `2750`, group = lab's `unix_group` | that lab only |
+   | `knowledge/workflows.yaml` | `664` | everyone reads; BSR edits (the portal also checks BSR membership) |
+   | `knowledge/<lab>/` | `2770` dirs / `660` files, group = lab's `unix_group` | that lab reads and edits |
+   | `.git/` | group-writable, `core.sharedRepository=group` | BSR (so any member's portal saves are recorded) |
+   | `~/.codespringhub/portal-token` | `700` / `600` | only that person |
    | `var/`, `var/hub.db` | `2770` / `660`, group `bioinformatics` | BSR only |
 
    The server creates `var/` and `hub.db` with these modes automatically, and `hub check` fails if
@@ -361,6 +364,15 @@ These are deliberate simplifications, or gaps found while writing this document:
 7. **`query_table` loads up to 500 MB into memory** for each call.
 8. **The `TODO` convention depends on the model following instructions.**
 9. **Workflow statuses are placeholders.** All five are `candidate` with version `TODO` until BSR reviews them.
+
+---
+
+**Several people, one shared folder (fixed 2026-11-09).** The first version assumed one user: the
+portal link was a single file in `var/` owned by its creator, the BSR folder was writable only by its
+creator, and git refused to work in a repository owned by someone else. Now each person's link is in
+their own home folder, lab folders and `.git` are group-writable, new files are created `660`, git runs
+with `safe.directory` and an explicit committer (so it works for members who never configured git),
+and a git failure is logged (`portal:history_not_recorded`) instead of blocking a save.
 
 ---
 

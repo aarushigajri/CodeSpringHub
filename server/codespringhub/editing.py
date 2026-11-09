@@ -45,7 +45,7 @@ def slugify(text: str) -> str:
 
 def _write_atomic(path: Path, text: str):
     path.parent.mkdir(parents=True, exist_ok=True)
-    mode = path.stat().st_mode & 0o777 if path.exists() else 0o640
+    mode = path.stat().st_mode & 0o777 if path.exists() else 0o660
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-")
     with os.fdopen(fd, "w") as fh:
         fh.write(text)
@@ -59,24 +59,43 @@ def _make_private_dir(path: Path, like: Path):
         os.chmod(path, like.stat().st_mode & 0o7777)
 
 
+def _git(*args, env=None, check=True):
+    """Run git in the Hub repo as whichever BSR member is using the portal.
+
+    safe.directory: git refuses repos owned by another user unless told otherwise.
+    core.sharedRepository=group: new git objects stay writable for the whole group.
+    """
+    repo = str(config.HUB_HOME)
+    return subprocess.run(
+        ["git", "-c", f"safe.directory={repo}", "-c", "core.sharedRepository=group", "-C", repo, *args],
+        check=check, capture_output=True, text=True, env=env,
+    )
+
+
 def _commit(user: str, paths: list[Path], message: str):
-    """Record a local git commit for just these paths. Never pushes. Silently skips
-    if the Hub folder isn't a git repository."""
+    """Record a local git commit for just these paths. Never pushes. A git problem never
+    blocks a save: the file is already written, so we log it and carry on."""
     repo = config.HUB_HOME
     if not (repo / ".git").exists():
         return
     rel = [str(p.relative_to(repo)) for p in paths]
-    author = f"{display_name(user)} <{user}@cshl.edu>"
-    env = os.environ | {"GIT_AUTHOR_NAME": display_name(user), "GIT_AUTHOR_EMAIL": f"{user}@cshl.edu"}
+    name, email = display_name(user), f"{user}@cshl.edu"
+    # Set the committer too: a portal user may never have configured git.
+    env = os.environ | {"GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email,
+                        "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email}
     with _git_lock:
-        subprocess.run(["git", "-C", str(repo), "add", "-A", "--", *rel], check=True, capture_output=True)
-        staged = subprocess.run(["git", "-C", str(repo), "diff", "--cached", "--quiet", "--", *rel])
-        if staged.returncode == 0:
-            return  # nothing changed
-        subprocess.run(
-            ["git", "-C", str(repo), "commit", "-q", "--author", author, "-m", f"portal: {message}", "--", *rel],
-            check=True, capture_output=True, env=env,
-        )
+        try:
+            _git("add", "-A", "--", *rel, env=env)
+            if _git("diff", "--cached", "--quiet", "--", *rel, check=False).returncode == 0:
+                return  # nothing changed
+            _git("commit", "-q", "-m", f"portal: {message}", "--", *rel, env=env)
+        except subprocess.CalledProcessError as e:
+            conn = store.connect()
+            try:
+                store.log_call(conn, user, "portal:history_not_recorded", {"paths": rel}, False, 0,
+                               (e.stderr or str(e)).strip()[:500])
+            finally:
+                conn.close()
 
 
 def _audit(user, action, details):
@@ -92,11 +111,8 @@ def history(user, lab_id, rel_path=None, limit=20) -> list[dict]:
     target = lab.dir / rel_path if rel_path else lab.dir
     if not (config.HUB_HOME / ".git").exists():
         return []
-    out = subprocess.run(
-        ["git", "-C", str(config.HUB_HOME), "log", f"-{limit}", "--format=%h%x09%an%x09%ad%x09%s",
-         "--date=format:%Y-%m-%d %H:%M", "--", str(target.relative_to(config.HUB_HOME))],
-        capture_output=True, text=True,
-    ).stdout
+    out = _git("log", f"-{limit}", "--format=%h%x09%an%x09%ad%x09%s", "--date=format:%Y-%m-%d %H:%M",
+               "--", str(target.relative_to(config.HUB_HOME)), check=False).stdout
     rows = [line.split("\t", 3) for line in out.splitlines() if line]
     return [{"commit": c, "author": a, "date": d, "message": m} for c, a, d, m in rows]
 
