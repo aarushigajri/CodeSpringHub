@@ -14,7 +14,7 @@ workflows:
   - wgs
   - wes
   - dna-seq
-  status: candidate
+  status: validated
   version: 3.2.3
   url: https://nf-co.re/sarek
   summary: Germline and somatic variant calling from WGS/WES FASTQ.
