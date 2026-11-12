@@ -3,7 +3,7 @@ import { Ctx } from "../App";
 import { ApiError, get } from "../api";
 import { Help, notify } from "../components";
 
-type Info = { user: string; host: string; command: string; claude_desktop: object; notice: string; portal_port: number; portal_command: string };
+type Info = { user: string; host: string; command: string; claude_desktop: object; notice: string; portal_port: number; portal_command: string; setup_mac: string; setup_windows: string };
 
 function Copy({ text, label = "Copy" }: { text: string; label?: string }) {
   return (
@@ -98,24 +98,61 @@ export default function Connect({ ctx }: { ctx: Ctx }) {
           <Code text={`ssh-keygen -t ed25519`} />
           <p className="muted small">Then send the key to the cluster (it asks for your cluster password one last time):</p>
           <Code text={copyKey} />
-          <p className="muted small">Check it worked: this should print your username without asking for a password.</p>
+          <p className="muted small">
+            Check it worked: this should print your username without asking for a password. The first time, it asks{" "}
+            <em>"Are you sure you want to continue connecting?"</em>: type <code>yes</code>.
+          </p>
           <Code text={`ssh ${target} whoami`} />
         </li>
 
         <li>
           <h3>Tell Claude Desktop about CodeSpringHub</h3>
           <p>
-            In Claude Desktop open <strong>Settings → Developer → Edit Config</strong>. That opens{" "}
-            <code>{configPath}</code>. Replace its contents with this (or, if it already has an{" "}
-            <code>mcpServers</code> section, add the <code>codespringhub</code> part to it), then save:
+            First <strong>quit Claude Desktop completely</strong>{" "}
+            {os === "mac" ? <>(<strong>Cmd+Q</strong>)</> : <>(right-click the Claude icon by the clock, then <strong>Quit</strong>)</>}
+            , or it may undo the change. Then run this in {os === "mac" ? "Terminal" : "PowerShell"}. It adds
+            CodeSpringHub to Claude's settings, keeps your other settings, and saves a backup copy first.
           </p>
-          <Code text={json} />
+          {os === "mac" ? (
+            <p className="muted small">
+              It also copies a small helper, <code>~/.codespringhub/connect.py</code>, from the cluster to your Mac.
+              If your laptop sleeps or the Wi-Fi or VPN drops, the helper reconnects by itself, so you don't have to
+              restart Claude. It only runs the same SSH command to the cluster and sends nothing anywhere else.
+            </p>
+          ) : (
+            <p className="muted small">
+              On Windows the connection doesn't reconnect by itself yet: if Claude says CodeSpringHub is unavailable
+              (for example after your laptop slept), quit Claude Desktop and open it again.
+            </p>
+          )}
+          <Code text={os === "mac" ? info.setup_mac : info.setup_windows} />
+          <details className="small">
+            <summary>Prefer to edit the file by hand?</summary>
+            <p>
+              In Claude Desktop open <strong>Settings → Developer → Edit Config</strong>, which opens{" "}
+              <code>{configPath}</code>. <strong>Don't delete what's already there.</strong> Add the{" "}
+              <code>mcpServers</code> part below next to the existing settings (inside the outer{" "}
+              <code>{"{ }"}</code>, separated by a comma), or, if there's already an <code>mcpServers</code>{" "}
+              section, add just the <code>codespringhub</code> part to it. Then save. (Set up by hand, it won't
+              reconnect by itself: restart Claude Desktop if the connection drops.)
+            </p>
+            <Code text={json} />
+          </details>
         </li>
 
         <li>
-          <h3>Restart Claude Desktop and try it</h3>
-          <p>Quit Claude completely and reopen it. Then ask:</p>
+          <h3>Open Claude Desktop and try it</h3>
+          <p>
+            Under <strong>Settings → Developer</strong>, <code>codespringhub</code> should say <em>running</em>. Then ask:
+          </p>
           <Code text={`Using CodeSpringHub, which labs can I use, and what does Claude know about my lab?`} />
+          <p className="muted small">
+            Not listed? Check the command in step 3 printed "Added CodeSpringHub". Listed with an error? Run the{" "}
+            <code>whoami</code> check in step 2 again. The details are in{" "}
+            <code>{os === "mac" ? "~/Library/Logs/Claude/mcp-server-codespringhub.log" : "%APPDATA%\\Claude\\logs\\mcp-server-codespringhub.log"}</code>
+            , or ask BSR. You can also preview exactly what
+            Claude receives on the <a href="#/try">Try it as Claude</a> page.
+          </p>
         </li>
 
         <li>
@@ -126,10 +163,6 @@ export default function Connect({ ctx }: { ctx: Ctx }) {
             while you use the portal; close it when you're done.
           </p>
           <Code text={info.portal_command} />
-          <p className="muted small">
-            If it doesn't work, run <code>hub doctor</code> on the cluster, or ask BSR. You can also preview exactly what
-            Claude receives on the <a href="#/try">Try it as Claude</a> page.
-          </p>
         </li>
       </ol>
 

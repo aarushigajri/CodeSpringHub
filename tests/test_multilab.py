@@ -3,6 +3,7 @@
 import argparse
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 import yaml
@@ -189,6 +190,34 @@ def test_connect_info_gives_a_ready_claude_desktop_setup(api):
     assert server["command"] == "ssh"
     assert server["args"][-2].startswith(f"{USER}@") and server["args"][-1].endswith("env/bin/codespringhub")
     assert "shared with BSR" in info["notice"]
+    # first connection must not stop at SSH's "are you sure?" question, which nobody can answer
+    assert "StrictHostKeyChecking=accept-new" in server["args"] and "BatchMode=yes" in server["args"]
+
+
+def test_setup_command_adds_the_hub_without_losing_other_settings(api, tmp_path):
+    import json as _json, subprocess
+    info = api.get("/api/connect").json()
+    cfg = tmp_path / "Library/Application Support/Claude/claude_desktop_config.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(_json.dumps({"preferences": {"x": 1}, "mcpServers": {"other": {"command": "y"}}}))
+    real_helper = Path(__file__).resolve().parents[1] / "laptop" / "connect.py"
+    (config.HUB_HOME / "laptop").mkdir(exist_ok=True)
+    (config.HUB_HOME / "laptop" / "connect.py").write_text(real_helper.read_text())
+    # stand-in for scp: "copy" the helper from the cluster path named in the command
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    (fakebin / "scp").write_text('#!/bin/bash\nsrc="${@: -2:1}"; cp "${src#*:}" "${@: -1}"\n')
+    (fakebin / "scp").chmod(0o755)
+    subprocess.run(["bash", "-c", info["setup_mac"]], env={"HOME": str(tmp_path), "PATH": f"{fakebin}:/usr/bin:/bin"},
+                   check=True)
+    c = _json.loads(cfg.read_text())
+    assert c["preferences"] == {"x": 1} and set(c["mcpServers"]) == {"other", "codespringhub"}
+    helper = tmp_path / ".codespringhub" / "connect.py"
+    assert helper.read_text() == (config.HUB_HOME / "laptop" / "connect.py").read_text()
+    direct = info["claude_desktop"]["mcpServers"]["codespringhub"]
+    assert c["mcpServers"]["codespringhub"]["args"] == [str(helper), "--", direct["command"], *direct["args"]]
+    assert cfg.with_name(cfg.name + ".bak").exists()
+    assert "$env:APPDATA" in info["setup_windows"] and "WriteAllText" in info["setup_windows"]
 
 
 def test_main_repo_never_holds_lab_knowledge():

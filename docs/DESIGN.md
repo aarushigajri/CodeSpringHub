@@ -471,6 +471,20 @@ hub doctor                                                                      
 `add-lab` creates the folder with the right ACLs, a context template, an empty registry, the
 `members/` folder, the lab's own history, and the group's access to `knowledge/` and `var/events/`.
 
+**Researchers don't clone anything.** Everyone runs the one installed copy in the BSR folder, as
+themselves, over SSH: Claude Desktop starts `env/bin/codespringhub` on the login node when it opens,
+and the process ends when Claude closes. So a change to the live folder reaches every lab at once:
+develop in a separate clone and update the live folder only after tests pass.
+
+**Staying connected.** A laptop sleeping or changing network cuts the SSH link, and Claude Desktop
+doesn't restart a tool server by itself. On Mac, the Connect page's setup command copies
+`laptop/connect.py` to `~/.codespringhub/` and starts SSH through it. When the link dies, the helper
+answers any request that was waiting with a "reconnecting, try again" error, starts SSH again with
+growing pauses (2 s up to 60 s), and repeats Claude's original opening handshake so the conversation
+carries on. If the very first connection fails (no key, wrong host), it exits like plain SSH so the
+error shows up in Claude. Python standard library only; tested in `tests/test_connect_helper.py`
+and over real SSH. Windows has no helper yet: restart Claude Desktop after a drop.
+
 ### 12.4 Limits of this model
 
 - **Same trust as the cluster.** Everything runs as the researcher. A determined member could run their

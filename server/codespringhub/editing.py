@@ -8,6 +8,7 @@ Every change:
   - writes a usage-log row (details withheld for personal items).
 """
 
+import json
 import os
 import pwd
 import re
@@ -589,6 +590,40 @@ def portal_port(username: str) -> int:
     return 20000 + pwd.getpwnam(username).pw_uid % 40000
 
 
+def _setup_mac(server: dict, target: str, host: str) -> str:
+    """A Terminal command that (1) copies the reconnect helper (laptop/connect.py) from the
+    cluster to ~/.codespringhub/, and (2) adds CodeSpringHub to Claude Desktop's config through
+    that helper, keeping every other setting and a backup copy."""
+    helper_src = config.HUB_HOME / "laptop" / "connect.py"
+    ssh_cmd = [server["command"], *server["args"]]
+    return f"""mkdir -p ~/.codespringhub && scp -q -o BatchMode=yes -o StrictHostKeyChecking=accept-new {target}@{host}:{helper_src} ~/.codespringhub/connect.py && /usr/bin/python3 - <<'EOF'
+import json, pathlib, shutil
+helper = pathlib.Path.home() / ".codespringhub" / "connect.py"
+p = pathlib.Path.home() / "Library/Application Support/Claude/claude_desktop_config.json"
+p.parent.mkdir(parents=True, exist_ok=True)
+c = {{}}
+if p.exists():
+    shutil.copy(p, p.with_name(p.name + ".bak"))
+    c = json.loads(p.read_text() or "{{}}")
+ssh = json.loads('{json.dumps(ssh_cmd)}')
+c.setdefault("mcpServers", {{}})["codespringhub"] = {{"command": "/usr/bin/python3", "args": [str(helper), "--"] + ssh}}
+p.write_text(json.dumps(c, indent=2))
+print("Added CodeSpringHub. Now open Claude Desktop.")
+EOF"""
+
+
+def _setup_windows(server: dict) -> str:
+    """The same for Windows PowerShell. Written without a byte-order mark, which Claude can't read."""
+    return f"""$p = "$env:APPDATA\\Claude\\claude_desktop_config.json"
+New-Item -ItemType Directory -Force (Split-Path $p) | Out-Null
+$c = [pscustomobject]@{{}}
+if (Test-Path $p) {{ Copy-Item $p "$p.bak"; $raw = Get-Content $p -Raw; if ($raw) {{ $c = $raw | ConvertFrom-Json }} }}
+if (-not $c.mcpServers) {{ $c | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{{}}) -Force }}
+$c.mcpServers | Add-Member -NotePropertyName codespringhub -NotePropertyValue ('{json.dumps(server)}' | ConvertFrom-Json) -Force
+[IO.File]::WriteAllText($p, ($c | ConvertTo-Json -Depth 10))
+Write-Output 'Added CodeSpringHub. Now open Claude Desktop.'"""
+
+
 def connect_info(user, for_user: str | None = None) -> dict:
     """Setup instructions for `for_user` (default: the signed-in user). BSR uses this to prepare
     a researcher's setup; it contains only their username and public paths, nothing private."""
@@ -601,12 +636,19 @@ def connect_info(user, for_user: str | None = None) -> dict:
         raise NotFound(f"There's no cluster account called '{target}'.")
     host = config.CONNECT_HOST or _laptop_hostname()
     command = str(config.HUB_HOME / "env" / "bin" / "codespringhub")
+    server = {
+        "command": "ssh",
+        # BatchMode: never stop to ask for a password (nobody can answer inside Claude Desktop).
+        # accept-new: trust the cluster's host key on the very first connection only; SSH still
+        # refuses if that key ever changes, which is the check that protects against impostors.
+        "args": ["-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+                 "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=30", f"{target}@{host}", command],
+    }
     return {
         "user": target, "host": host, "command": command,
-        "claude_desktop": {"mcpServers": {"codespringhub": {
-            "command": "ssh",
-            "args": ["-T", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=30", f"{target}@{host}", command],
-        }}},
+        "claude_desktop": {"mcpServers": {"codespringhub": server}},
+        "setup_mac": _setup_mac(server, target, host),
+        "setup_windows": _setup_windows(server),
         "portal_port": port,
         "portal_command": f"ssh -t -L {port}:localhost:{port} {target}@{host} {config.HUB_HOME / 'portal.sh'}",
         "notice": (

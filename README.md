@@ -53,7 +53,8 @@ IT doesn't need to be involved.
 2. **With the lab, in the portal:** fill in the lab page and register shared **data** and **code**.
    Members can add **personal** items (only they and their PI can see them, not BSR).
 3. **Each researcher connects Claude:** portal → **Connect Claude** gives them SSH-key steps (Mac or
-   Windows) and the exact Claude Desktop setup to paste. `hub doctor` checks that it works for them.
+   Windows) and a one-command Claude Desktop setup (on Mac it reconnects by itself after the laptop sleeps
+   or the network drops). `hub doctor` checks that it works for them.
 4. **BSR follows usage** on the Activity page. Connecting means usage is shared with BSR; requests about
    personal items are logged without details.
 
