@@ -100,7 +100,7 @@ export default function TryIt({ ctx }: { ctx: Ctx }) {
   );
 }
 
-const LIST_TOOLS = new Set(["list_labs", "search_knowledge", "list_datasets", "list_workflows"]);
+const LIST_TOOLS = new Set(["list_labs", "search_knowledge", "list_datasets"]);
 
 function ResultView({ result }: { result: Result }) {
   const [raw, setRaw] = useState(false);

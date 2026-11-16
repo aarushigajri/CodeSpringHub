@@ -23,8 +23,35 @@ export function FriendlyResult({ tool, data, text }: { tool: string; data: Any; 
     );
   }
 
+  if (tool === "list_workflows" && data && !Array.isArray(data) && "bsr_pipelines" in data) {
+    const bsr: Any[] = data.bsr_pipelines ?? [];
+    return (
+      <div className="stack">
+        <strong>BSR pipelines (always the first choice)</strong>
+        {data.bsr_pipelines_unavailable && <p className="muted small">BSR pipelines couldn't be loaded: {data.bsr_pipelines_unavailable}</p>}
+        {bsr.length ? (
+          <table>
+            <thead><tr><th>Pipeline</th><th>Run from Claude?</th><th>Results</th></tr></thead>
+            <tbody>
+              {bsr.map((p: Any) => (
+                <tr key={p.id}>
+                  <td><strong>{p.name}</strong></td>
+                  <td>{p.runnable_from_hub ? <Badge kind="ok">Yes</Badge> : <Badge kind="muted">In CodeSpringApp</Badge>}</td>
+                  <td className="muted small">{p.results_explorer || "–"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : <p className="muted">No BSR pipelines listed.</p>}
+        <strong>nf-core (secondary, only if no BSR pipeline fits)</strong>
+        <FriendlyResult tool="list_workflows" data={data.secondary_nfcore ?? []} text="" />
+        {data.rule && <p className="muted small">{data.rule}</p>}
+      </div>
+    );
+  }
+
   if (tool === "list_workflows" && Array.isArray(data)) {
-    if (!data.length) return <p className="muted">No BSR workflow matches. Claude would suggest asking BSR.</p>;
+    if (!data.length) return <p className="muted">No nf-core workflow matches.</p>;
     return (
       <table>
         <thead><tr><th>Workflow</th><th>For</th><th>Status</th></tr></thead>
@@ -32,7 +59,7 @@ export function FriendlyResult({ tool, data, text }: { tool: string; data: Any; 
           {data.map((w: Any) => (
             <tr key={w.id}>
               <td><strong>{w.name}</strong><div className="muted small">{w.summary}</div></td>
-              <td>{w.assays.join(", ")}</td>
+              <td>{(w.assays ?? []).join(", ")}</td>
               <td>{w.status === "validated" ? <Badge kind="ok">Validated</Badge> : <Badge kind="warn">Candidate</Badge>}</td>
             </tr>
           ))}
