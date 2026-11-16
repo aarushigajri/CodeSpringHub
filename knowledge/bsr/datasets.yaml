@@ -11,3 +11,12 @@ datasets:
     sensitivity: standard
     registered_by: gajri
     registered_on: "2026-11-03"
+  - id: codespringlab-rnaseq-example
+    title: CodeSpringLab bulk RNA-seq example (6 mouse samples)
+    project: codespringhub-pilot
+    path: /grid/bsr/data/data/bsr_readable_data/CodeSpringSuite/CodeSpringLab/scripts_DoNotTouch/test
+    assay: rna-seq
+    description: CodeSpringLab's bundled example. fastq/ holds 12 paired-end FASTQs (control_1-3, treated_1-3, mouse); manifest/design_matrix.txt is the design (column 'treatment', control vs treated). Good first run of the BSR RNA-seq pipeline from Claude.
+    sensitivity: standard
+    registered_by: gajri
+    registered_on: "2026-11-12"

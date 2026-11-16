@@ -27,6 +27,12 @@ USER_DIR = Path(os.environ.get("CODESPRINGHUB_USER_DIR", Path.home() / ".codespr
 # What researchers' laptops SSH to when Claude Desktop starts the Hub (shown on the Connect page).
 CONNECT_HOST = os.environ.get("CODESPRINGHUB_CONNECT_HOST", "")
 
+# Running BSR pipelines (see runs.py): the BSR-managed shared install of CodeSpringApp + CodeSpringLab.
+CODESPRING_SUITE = Path(os.environ.get("CODESPRINGHUB_SUITE", "/grid/bsr/data/data/bsr_readable_data/CodeSpringSuite"))
+RUN_PLAN_TTL_SECONDS = 2 * 60 * 60   # a shown plan must be confirmed within this time
+MAX_ACTIVE_RUNS = 3                  # Hub-started analyses per person at once
+OPEN_LINK_TTL_SECONDS = 15 * 60      # one-time Results Explorer links
+
 # The folder picker and dataset registration are limited to these roots.
 BROWSE_ROOTS = [r for r in os.environ.get("CODESPRINGHUB_BROWSE_ROOTS", "/grid").split(":") if r]
 

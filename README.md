@@ -149,7 +149,10 @@ npx @modelcontextprotocol/inspector ./env/bin/codespringhub
 | `inspect_asset` | Summary of one file: table shape and preview, FASTQ stats, first lines of text |
 | `read_code_file` | Full source of a script/notebook/pipeline in a registered **code** resource |
 | `query_table` | One read-only SQL SELECT on a table file, max 50 rows, no other file access |
-| `list_workflows` | BSR workflow registry (`validated` / `candidate`) |
+| `list_workflows` | How BSR runs analyses: CodeSpringApp/CodeSpringLab pipelines first, nf-core as secondary |
+| `plan_analysis`, `start_analysis` | Plan a bulk RNA-seq run with BSR's pipeline, show it, start it only after the user confirms |
+| `analysis_status`, `list_analyses`, `resume_analysis` | Follow (or restart) runs you started from the Hub |
+| `open_results` | One-time link to the run in CodeSpringApp's Results Explorer, plus the SSH tunnel command |
 | `request_bsr_review` | Open a ticket for a human BSR expert |
 
 ## Safety rules built in

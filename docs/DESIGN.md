@@ -496,7 +496,76 @@ and over real SSH. Windows has no helper yet: restart Claude Desktop after a dro
 
 ---
 
-## 13. Open decisions
+## 13. Running BSR pipelines from Claude (built November 2026)
+
+**Goal.** A researcher asks in Claude, in plain language, for an analysis. Claude learns from BSR's
+own pipelines (CodeSpringApp driving CodeSpringLab's scripts) and runs them exactly as BSR does,
+through CodeSpringApp's own code, then opens CodeSpringApp's Results Explorer. nf-core pipelines
+are a secondary suggestion only. v1 said "no Slurm execution"; this section changes that, for bulk
+RNA-seq first.
+
+### 13.1 The pieces
+
+```
+Claude ──MCP──▶ Hub (runs.py) ──▶ codespring-run (CodeSpringApp, shared BSR install)
+                 │  plan → user confirms → start          │  CodeSpringApp's own functions:
+                 │  status, resume, open_results          │  new_project_from_inputs, submit_*_jobs,
+                 │                                         │  job_history  → CodeSpringLab qsub_*.sh
+                 ▼                                         ▼
+        ~/.codespringhub/runs/ (plans, run list)    ~/csl_results/<project>/  +  ~/.codespringweb/
+```
+
+- **One BSR copy** of both repositories at `/grid/bsr/data/data/bsr_readable_data/CodeSpringSuite/`
+  (`CodeSpringApp/`, `CodeSpringLab/`, and a `CODESPRING_MANAGED_INSTALL` marker). Everyone runs it
+  under their own account; nobody needs their own clone. CodeSpringApp accepts this install outside
+  home only because of the marker (it still refuses other people's home folders).
+- **`bin/codespring-run`** (new in CodeSpringApp, branch `feature/hub-bridge`): `catalog`, `check`,
+  `start`, `status`, `resume`. It sources `app.R` and calls the same functions the buttons call, so
+  references, CodeSpringLab scripts, `#SBATCH` resources, folders and `jobs.tsv` records are identical
+  to a run started in the app. The project appears in the person's CodeSpringApp project list.
+- **The controller**: CodeSpringApp submits one step per button press, so a Hub run has a small
+  detached process on the login node (like the app's own Sarek and nf-core CUT&RUN controllers)
+  that submits each step when the previous one has finished and judges success by the step's
+  expected output files. It uses no Slurm allocation (compute nodes don't have the app's R
+  packages). If it stops (login node restart), `resume` continues; finished steps are kept.
+- **Deep links + one-time tickets** (CodeSpringApp): `?ticket=…&project=rna/<name>&view=results`
+  opens that project on the Results Explorer. The ticket is a single-use file the Hub writes in
+  `~/.codespringweb/open_tickets/` (600, 15-minute expiry), so the app's long-lived access token
+  never enters a chat. Only the person's own saved projects can be opened.
+
+### 13.2 Guardrails (who enforces what)
+
+| Rule | Where |
+|---|---|
+| Only BSR pipelines, references, adapter presets, gene sets and options; no custom commands, runner paths, adapters or result folders | `codespring-run check` (CodeSpringApp) |
+| Results only in the person's CodeSpringApp results root; an existing results folder is never cleared | CodeSpringApp |
+| Sample names, column names and file names validated (no shell characters, no paths); every read file must exist | CodeSpringApp |
+| Max 96 samples per run; DESeq2 needs ≥2 replicates per group | CodeSpringApp |
+| Inputs must be Hub-registered **data** the person can see (lab-shared, or their own personal); files can't escape the dataset | Hub |
+| Nothing runs without a plan the user saw and confirmed; plans are single-use, expire after 2 h, are tamper-checked, and belong to one person | Hub |
+| A run can only start under the account of the person asking | Hub |
+| At most 3 Hub-started runs per person at once | Hub |
+| `CSL_*` environment overrides are ignored; the shared install decides | Hub |
+| Claude must follow BSR pipelines, never substitute tools or write ad-hoc Slurm commands | Server instructions + `list_workflows` rule |
+| Every plan, start, status and open is logged to BSR like other tools (personal datasets withheld) | Hub |
+
+Claude Desktop also asks the person before each tool call unless they allow it permanently.
+
+### 13.3 Updating the shared install
+
+BSR updates `CodeSpringSuite` deliberately, after tests pass (`tests/run_all.sh` in CodeSpringApp;
+`pytest` here). During development it was synced from the `feature/hub-bridge` worktree; once James
+merges the branch, replace it with clones pinned to a commit of each repository.
+
+### 13.4 Not yet
+
+- ATAC, ChIP, CUT&RUN, single-cell, Sarek and FetchNGS still start from CodeSpringApp only.
+- A run started from Claude is followed with `analysis_status`; there's no notification yet.
+- The controller lives on the login node it was started on (`bamdev1`), like the app's own.
+
+---
+
+## 14. Open decisions
 
 | # | Decision | Owner | Needed by |
 |---|---|---|---|
@@ -512,3 +581,5 @@ and over real SSH. Windows has no helper yet: restart Claude Desktop after a dro
 | 11 | Which SSH host researchers' Claude Desktop connects to (default `bamdev1.cshl.edu`; set `CODESPRINGHUB_CONNECT_HOST`) | BSR (+ HPC admins) | before onboarding |
 | 12 | Confirm CSHL's Claude Enterprise setup allows local MCP servers in Claude Desktop | AI admin | before onboarding |
 | 10 | Git remote: personal GitHub vs. CSHL/BSR organization | Aarushi | now |
+| 13 | James reviews and merges CodeSpringApp `feature/hub-bridge`; then pin the shared install to that commit | James + BSR | before onboarding |
+| 14 | HPC admins OK with small Hub run controllers on the login node (same pattern as CodeSpringApp's Sarek) | BSR + HPC admins | before onboarding |

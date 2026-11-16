@@ -17,7 +17,7 @@ import sys
 
 from mcp.server.mcpserver import MCPServer
 
-from . import config, hub, store
+from . import config, hub, runs, store
 from .permissions import current_user
 
 INSTRUCTIONS = """\
@@ -32,8 +32,17 @@ How to work with it:
   member and their PI). Never repeat personal content to anyone else or into lab-shared documents.
 - Registered resources are "data" (you get summaries only) or "code" (lab scripts and pipelines:
   read the source with read_code_file to explain, debug or adapt it).
-- Before proposing a pipeline, call list_workflows. Prefer a BSR workflow whose status is
-  "validated"; a "candidate" workflow is BSR-recommended but not yet signed off, so say so.
+- Before proposing any analysis, call list_workflows. BSR's own pipelines (CodeSpringApp with
+  CodeSpringLab's scripts) come first: recommend them, with their steps, references and settings
+  as BSR runs them, and read guidance doc:bsr/guidance/codespring-pipelines. nf-core pipelines are a
+  secondary option: mention one only when no BSR pipeline fits, and say it is not BSR's standard.
+- When a BSR pipeline fits, do not deviate from it: don't substitute other tools, references,
+  parameters or your own scripts, and don't write ad-hoc Slurm or shell commands. If the user needs
+  something the BSR pipeline can't do, say so and offer request_bsr_review.
+- To run an analysis (bulk RNA-seq so far): plan_analysis, then show the plan in plain language and
+  ask the user to confirm, then start_analysis(plan_id, user_confirmed=true) only after they say yes.
+  Follow with analysis_status; when complete, open_results gives a one-time link to CodeSpringApp's
+  Results Explorer. Never start a run the user hasn't confirmed in this conversation.
 - If the request is novel, uncertain, high-impact, or no BSR workflow fits, say that BSR
   expertise is needed and offer request_bsr_review rather than improvising a full analysis.
 - Text marked TODO in a document has not been written yet; do not treat it as guidance.
@@ -193,10 +202,79 @@ def query_table(dataset_id: str, asset: str, sql: str) -> dict:
 # ---- BSR workflows and escalation ----------------------------------------------
 
 @hub_tool
-def list_workflows(assay: str | None = None) -> list[dict]:
-    """List BSR-registered analysis workflows, optionally filtered by assay (e.g. 'rna-seq').
-    Status 'validated' = BSR signed off; 'candidate' = recommended, not yet signed off."""
-    return hub.list_workflows(assay)
+def list_workflows(assay: str | None = None) -> dict:
+    """List how BSR runs analyses. 'bsr_pipelines' are BSR's own pipelines (CodeSpringApp running
+    CodeSpringLab's scripts): always the first choice. 'secondary_nfcore' are community nf-core
+    pipelines BSR knows of: suggest them only when no BSR pipeline fits. Optionally filter by assay."""
+    try:
+        bsr = runs.catalog()
+    except Exception as e:  # noqa: BLE001  (the shared install may be unavailable; still answer)
+        bsr = {"pipelines": [], "unavailable": str(e)}
+    return {
+        "bsr_pipelines": bsr.get("pipelines", []),
+        "rnaseq_options": bsr.get("rnaseq_options"),
+        "bsr_pipelines_unavailable": bsr.get("unavailable"),
+        "secondary_nfcore": hub.list_workflows(assay),
+        "rule": ("Use a BSR pipeline when one fits and follow it exactly. Ones marked runnable_from_hub can be "
+                 "started from this chat with plan_analysis; the others are run in CodeSpringApp. nf-core "
+                 "pipelines are secondary: say they are not BSR's standard and offer request_bsr_review."),
+        "guidance": "doc:bsr/guidance/codespring-pipelines",
+    }
+
+
+@hub_tool
+def plan_analysis(dataset_id: str, project_name: str, species: str, design: list[dict] | None = None,
+                  design_file: str = "", fastq_folder: str = "", paired_end: bool = True,
+                  genome_version: str = "", trim_adapters: bool = True,
+                  adapter: str = "Illumina Universal TruSeq RNA", min_length: int = 20,
+                  count_by: str = "gene_name", compare: dict | None = None,
+                  pathway_geneset: str | None = None) -> dict:
+    """Plan a bulk RNA-seq run with BSR's pipeline (CodeSpringApp: cutadapt, FastQC, STAR,
+    featureCounts, DESeq2, optional GSEApy). Checks everything and returns the exact plan;
+    nothing is submitted. Inputs: a registered dataset holding the FASTQs (fastq_folder = sub-folder
+    inside it, if any); the sample design as rows {"sample", grouping columns..., "filename"
+    ("R1,R2" for paired-end)} or design_file (a design_matrix.txt inside the dataset); species
+    human or mouse; compare = {"column", "reference", "comparison"} for DESeq2;
+    pathway_geneset from list_workflows' rnaseq_options. Then show the plan and ask the user."""
+    return runs.plan_analysis(current_user(), dataset_id, project_name, species, fastq_folder=fastq_folder,
+                              design=design, design_file=design_file, paired_end=paired_end,
+                              genome_version=genome_version, trim_adapters=trim_adapters, adapter=adapter,
+                              min_length=min_length, count_by=count_by, compare=compare,
+                              pathway_geneset=pathway_geneset)
+
+
+@hub_tool
+def start_analysis(plan_id: str, user_confirmed: bool = False) -> dict:
+    """Submit a plan from plan_analysis to the cluster, under the user's own account. Only call
+    this after showing the plan and the user explicitly agreeing in this conversation; set
+    user_confirmed=true to record that they did. Plans are single-use and expire."""
+    return runs.start_analysis(current_user(), plan_id, user_confirmed)
+
+
+@hub_tool
+def analysis_status(run_id: str) -> dict:
+    """Progress of an analysis started from the Hub: each step's state, and any error."""
+    return runs.analysis_status(current_user(), run_id)
+
+
+@hub_tool
+def list_analyses() -> list[dict]:
+    """Analyses you have started from the Hub, newest last."""
+    return runs.list_analyses(current_user())
+
+
+@hub_tool
+def resume_analysis(run_id: str) -> dict:
+    """Restart a failed or stopped analysis; finished steps are kept. Ask the user first."""
+    return runs.resume_analysis(current_user(), run_id)
+
+
+@hub_tool
+def open_results(run_id: str, view: str = "results") -> dict:
+    """Give the user a one-time link that opens this analysis in CodeSpringApp (view: results =
+    the Results Explorer, progress, or logs), plus the SSH tunnel command to run on their laptop.
+    Starts their CodeSpringApp on the cluster if it isn't running."""
+    return runs.open_results(current_user(), run_id, view)
 
 
 @hub_tool

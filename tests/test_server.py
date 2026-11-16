@@ -33,7 +33,7 @@ def call(tool, as_user=None, **args):
     return blocks if tool in LIST_TOOLS else blocks[0]
 
 
-LIST_TOOLS = {"search_knowledge", "list_datasets", "list_workflows"}
+LIST_TOOLS = {"search_knowledge", "list_datasets"}
 
 
 def labs_of(user):
@@ -129,7 +129,7 @@ def test_usage_log_is_a_private_drop_box():
 
 
 def test_workflows_filter():
-    assert [w["id"] for w in call("list_workflows", assay="RNA-seq")] == ["nf-core-rnaseq"]
+    assert [w["id"] for w in call("list_workflows", assay="RNA-seq")["secondary_nfcore"]] == ["nf-core-rnaseq"]
 
 
 def test_acting_user_reaches_the_tools():
