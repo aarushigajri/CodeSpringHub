@@ -587,7 +587,8 @@ def _laptop_hostname() -> str:
 def portal_port(username: str) -> int:
     """Each person's portal gets its own fixed port (from their uid), so the one-line start
     command works and two people's portals on the same login node never collide."""
-    return 20000 + pwd.getpwnam(username).pw_uid % 40000
+    # CodeSpringApp uses 20000-40098 (20000 + uid % 20000, plus 99); stay clear of it.
+    return 41000 + pwd.getpwnam(username).pw_uid % 20000
 
 
 def _setup_mac(server: dict, target: str, host: str) -> str:
