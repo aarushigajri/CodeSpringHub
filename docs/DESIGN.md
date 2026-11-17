@@ -562,7 +562,11 @@ Claude ──MCP──▶ Hub (runs.py) ──▶ codespring-run (CodeSpringApp,
   app's long-lived access token never enters a chat, and it sits in the `#fragment`, which browsers
   never send, so link previews and prefetches can't use it up. The app's page moves it into the
   address, spends it, and answers with a redirect that gives the browser an HttpOnly key cookie
-  (name unique per app launch), so reloads and reconnects keep working for the life of that app.
+  named for the user. As with the portal's saved secret, the key is kept in the person's own
+  `~/.codespringweb/browser-key` (600) and the cookie lasts 30 days, so reopening the app, reloads,
+  reconnects, a closed browser and an app restart all keep working; deleting that file signs every
+  browser out. The Hub starts the shared app with idle shutdown off, so like the portal it keeps
+  running after the last tab closes.
   A shared app started before its code changed is restarted by the Hub when it next needs one, as
   the portal is. Only the person's own saved projects can be opened.
 

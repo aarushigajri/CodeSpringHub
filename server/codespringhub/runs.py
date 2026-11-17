@@ -727,6 +727,10 @@ def _start_app(wait_seconds: int = 120) -> int:
         raise HubError("CodeSpringApp isn't installed for the Hub yet.")
     log = _runs_dir() / "codespringapp-launch.log"
     env = {k: v for k, v in os.environ.items() if not k.startswith("CSL_")}
+    # Like the portal, the shared app keeps running after the last tab closes, so going back to it
+    # later (or a link from Claude) finds it where it was. The launcher's default is to stop it 5
+    # minutes after the last browser session ends.
+    env["CSL_WEB_IDLE_SHUTDOWN_SECONDS"] = "0"
     with open(log, "w") as fh:
         subprocess.Popen(["setsid", "bash", str(launcher)], stdin=subprocess.DEVNULL, stdout=fh, stderr=fh,
                          env=env, cwd=str(Path.home()), start_new_session=True)

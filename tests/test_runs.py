@@ -296,6 +296,21 @@ def test_open_app_gives_one_link_to_codespringapp_itself(suite, monkeypatch, tmp
     assert out["say"].startswith(f"**[Open CodeSpringApp]({out['link']})**") and not out["needs_tunnel"]
 
 
+def test_the_shared_app_is_started_to_stay_open_like_the_portal(suite, monkeypatch, tmp_path):
+    launcher = config.CODESPRING_SUITE / "CodeSpringApp" / "run_codespringweb.sh"
+    launcher.parent.mkdir(parents=True, exist_ok=True)
+    launcher.touch()
+    monkeypatch.setenv("CSL_WEB_IDLE_SHUTDOWN_SECONDS", "300")
+    monkeypatch.setattr(runs, "_runs_dir", lambda: tmp_path)
+    monkeypatch.setattr(runs.time, "sleep", lambda s: None)
+    monkeypatch.setattr(runs, "_running_app", lambda: (31804, True))
+    seen = {}
+    monkeypatch.setattr(runs.subprocess, "Popen", lambda argv, **kw: seen.update(kw))
+    assert runs._start_app() == 31804
+    assert seen["env"]["CSL_WEB_IDLE_SHUTDOWN_SECONDS"] == "0"
+    assert not [k for k in seen["env"] if k.startswith("CSL_") and k != "CSL_WEB_IDLE_SHUTDOWN_SECONDS"]
+
+
 # ---- storage --------------------------------------------------------------------------------------
 
 def test_storage_estimate_is_a_range_around_the_measured_run():
