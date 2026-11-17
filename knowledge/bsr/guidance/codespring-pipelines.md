@@ -37,7 +37,11 @@ Results go to the person's own CodeSpringApp results folder (`~/csl_results/<pro
    and others). Mouse genes are mapped to human orthologs.
 8. **Results Explorer** (CodeSpringApp): QC, counts, PCA, volcano, heatmaps, GSEA, files.
 
-Optional in CodeSpringApp only: RSEM and Kallisto quantification.
+Optional, after the gene counts: **RSEM** (gene and transcript estimates from STAR's transcriptome
+BAM, by gene_id) and **Kallisto** (transcript estimates from the reads). Both build TPM matrices in
+`counts/`. Pathway analysis can use up to 6 gene-set databases in one run (one GSEApy job each).
+A run can go **all at once** or **one step at a time** (it pauses after each step until the person
+says to continue).
 
 **References**: human GRCh38 / GENCODE v50 (default) or v42 (legacy); mouse GRCm39 / GENCODE M39
 (default) or M29 (legacy). Maize references exist for RNA-seq in the app.
@@ -74,6 +78,14 @@ trimming off, take away the Cutadapt share. Example: 50 GB of FASTQs -> ~282-458
 
 When in doubt, or for very large projects, ask BSR (request_bsr_review).
 
+## Starting a run from Claude (BSR's Agent)
+
+Every run started from Claude follows the same steps, so researchers see the same thing each time:
+a storage check, a greeting from BSR's Agent, four questions (pipeline, pathway gene sets, extra
+quantification, run mode), a one-table plan preview with the full output folder and BSR support
+contacts, then **Start pipeline** or **Ask for clarification**. Support contacts live in
+`knowledge/support_contacts.yaml`.
+
 ## What to tell researchers
 
 - Each step uses the CPU, memory and time limits written into CodeSpringLab's Slurm scripts;
@@ -86,6 +98,9 @@ When in doubt, or for very large projects, ask BSR (request_bsr_review).
 ## Known limitations (November 2026)
 
 - From Claude, only bulk RNA-seq can be started so far; other analyses run in CodeSpringApp.
+- Several gene sets, RSEM/Kallisto and one-step-at-a-time runs from Claude need CodeSpringApp's
+  hub bridge spec version 2 in the shared install; until then the Hub says so and plans without them.
+- RSEM and Kallisto output size isn't measured yet (small next to STAR's BAMs). TODO: measure.
 - In CodeSpringLab's notebooks, ATAC single-end peak calling and ChIP HOMER annotation are broken;
   CodeSpringApp's versions are the ones to use.
 - Results from GSEApy for mouse depend on ortholog mapping; mention this when interpreting.
