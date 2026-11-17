@@ -765,3 +765,26 @@ pipeline, who may use it through the Hub, in `knowledge/bsr/shared/pipelines.yam
 - This governs what Claude offers and starts. It doesn't lock the CodeSpringApp install itself:
   someone who opens CodeSpringApp directly can still run any pipeline. Locking the app per group
   would be a CodeSpringApp change (James).
+
+---
+
+## 17. BSR's Agent: one name, a voice, and people (built 17 Nov 2026)
+
+- **One name.** Everything says *BSR's Agent*. "Bioinformatics Shared Resource" and "CodeSpring"
+  describe it rather than being names of their own (three names would make people wonder which
+  tool they're trusting). Claude Desktop shows the connection as **BSR Agent** (new setups add it
+  and remove the old `codespringhub` entry); the server declares the title "BSR's Agent:
+  Bioinformatics Shared Resource (CodeSpring)", BSR's website and a BSR icon for apps that show them.
+- **Voice: a bench colleague.** Warm, plain, "let's"/"we" where it fits. Every reply that used a Hub
+  tool ends with `— BSR's Agent · Bioinformatics Shared Resource, CSHL · CodeSpring`; replies that
+  didn't use the Hub have none, so people can tell when BSR's configured tools are behind an answer.
+- **Offers to bring in a person** (`bsr_check_in` in a tool result; Claude adds one line above the
+  sign-off): every 6 Hub calls (counted by the Hub, since Claude can't count reliably), when a run
+  finishes or fails, when someone isn't in any lab on the Hub yet (offer to set their lab up), and,
+  per the instructions, when someone asks about interpretation or which analysis to choose.
+- **`email_bsr`**: a question, setting up CodeSpringHub for a lab, or a meeting about an analysis,
+  optionally with Claude's short summary of the chat. It returns the exact draft first and sends
+  only with `user_confirmed`; it goes through the cluster's `mail` to BSR's support contacts
+  (`knowledge/support_contacts.yaml`), copy and reply-to the person, and is logged as a BSR review
+  ticket (portal Inbox). It refuses other people's personal items and other cores' internal items;
+  the usage log keeps only the purpose, never the draft text.

@@ -354,7 +354,7 @@ def _no_symbols(text):
 def test_analysis_options_asks_the_standard_questions(suite):
     from test_server import call
     opts = call("analysis_options")
-    assert opts["greeting"].startswith("Hi, this is BSR's Agent! I'll help you run")
+    assert opts["greeting"].startswith("Hi, this is BSR's Agent! Let's take a look at your data. I'll help you run")
     assert "CodeSpringHub is how I see" in opts["greeting"] and "CodeSpringApp is BSR's pipeline app" in opts["greeting"]
     q = {x["id"]: x for x in opts["questions"]}
     assert list(q) == ["pipeline", "pathway_genesets", "extra_quantification", "run_mode", "email_updates"]

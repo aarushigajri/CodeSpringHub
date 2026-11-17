@@ -164,6 +164,7 @@ npx @modelcontextprotocol/inspector ./env/bin/codespringhub
 | `analysis_report` | The post-run packet: one HTML page with the app's plots, QC, DEG lists and methods; plots shown in the chat, one-time download link |
 | `open_results` | One-time link to the run in CodeSpringApp's Results Explorer, plus the SSH tunnel command |
 | `open_portal` | Starts your portal if needed and gives a one-time link to it (the portal secret never enters the chat) |
+| `email_bsr` | Email the BSR team (question, lab setup, or a meeting), optionally with a chat summary; shows the draft and sends only on the user's yes |
 | `request_bsr_review` | Open a ticket for a human BSR expert |
 
 ## Safety rules built in

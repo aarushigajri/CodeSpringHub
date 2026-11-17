@@ -186,7 +186,7 @@ def test_suggestions_on_personal_documents_stay_personal(api):
 
 def test_connect_info_gives_a_ready_claude_desktop_setup(api):
     info = api.get("/api/connect").json()
-    server = info["claude_desktop"]["mcpServers"]["codespringhub"]
+    server = info["claude_desktop"]["mcpServers"]["BSR Agent"]
     assert server["command"] == "ssh"
     assert server["args"][-2].startswith(f"{USER}@") and server["args"][-1].endswith("env/bin/codespringhub")
     assert "shared with BSR" in info["notice"]
@@ -199,7 +199,7 @@ def test_setup_command_adds_the_hub_without_losing_other_settings(api, tmp_path)
     info = api.get("/api/connect").json()
     cfg = tmp_path / "Library/Application Support/Claude/claude_desktop_config.json"
     cfg.parent.mkdir(parents=True)
-    cfg.write_text(_json.dumps({"preferences": {"x": 1}, "mcpServers": {"other": {"command": "y"}}}))
+    cfg.write_text(_json.dumps({"preferences": {"x": 1}, "mcpServers": {"other": {"command": "y"}, "codespringhub": {"command": "old"}}}))
     real_helper = Path(__file__).resolve().parents[1] / "laptop" / "connect.py"
     (config.HUB_HOME / "laptop").mkdir(exist_ok=True)
     (config.HUB_HOME / "laptop" / "connect.py").write_text(real_helper.read_text())
@@ -211,11 +211,11 @@ def test_setup_command_adds_the_hub_without_losing_other_settings(api, tmp_path)
     subprocess.run(["bash", "-c", info["setup_mac"]], env={"HOME": str(tmp_path), "PATH": f"{fakebin}:/usr/bin:/bin"},
                    check=True)
     c = _json.loads(cfg.read_text())
-    assert c["preferences"] == {"x": 1} and set(c["mcpServers"]) == {"other", "codespringhub"}
+    assert c["preferences"] == {"x": 1} and set(c["mcpServers"]) == {"other", "BSR Agent"}
     helper = tmp_path / ".codespringhub" / "connect.py"
     assert helper.read_text() == (config.HUB_HOME / "laptop" / "connect.py").read_text()
-    direct = info["claude_desktop"]["mcpServers"]["codespringhub"]
-    assert c["mcpServers"]["codespringhub"]["args"] == [str(helper), "--", direct["command"], *direct["args"]]
+    direct = info["claude_desktop"]["mcpServers"]["BSR Agent"]
+    assert c["mcpServers"]["BSR Agent"]["args"] == [str(helper), "--", direct["command"], *direct["args"]]
     assert cfg.with_name(cfg.name + ".bak").exists()
     assert "$env:APPDATA" in info["setup_windows"] and "WriteAllText" in info["setup_windows"]
 
@@ -230,7 +230,7 @@ def test_connect_page_can_prepare_a_researchers_setup(api):
     import pwd as _pwd
     other = _pwd.getpwuid(0).pw_name  # an account that exists on every machine
     info = api.get("/api/connect", params={"for_user": other}).json()
-    server = info["claude_desktop"]["mcpServers"]["codespringhub"]
+    server = info["claude_desktop"]["mcpServers"]["BSR Agent"]
     assert info["user"] == other and server["args"][-2].startswith(f"{other}@")
     assert f"{other}@" in info["portal_command"] and str(info["portal_port"]) in info["portal_command"]
     assert USER not in info["portal_command"].split("@")[0]

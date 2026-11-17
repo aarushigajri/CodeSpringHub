@@ -470,6 +470,7 @@ def analysis_status(user, run_id, wait_seconds=0) -> dict:
                                         + (f"\n\n**Quality so far**\n\n{report}" if report else ""))
         out["next"] = (final + "Before it, explain the error in one or two plain sentences and offer "
                        "resume_analysis if it looks temporary. " + agent.STYLE)
+        out["bsr_check_in"] = agent.check_in("failed")
     elif state == "complete":
         out["say"] = agent.with_support(
             f"**All {len(shown)} steps are done.** Your results are in `{st.get('results_dir')}`.\n\n"
@@ -478,6 +479,7 @@ def analysis_status(user, run_id, wait_seconds=0) -> dict:
                        "add the report's download link and the Results Explorer link with its how_to_open (and the "
                        "tunnel command if needs_tunnel). If either tool fails, say so in one sentence. "
                        + agent.STYLE)
+        out["bsr_check_in"] = agent.check_in("complete")
     elif lines:
         out["say"] = "\n\n".join(lines)
         out["next"] = "Show `say` as is, adding nothing. " + _follow_rule()

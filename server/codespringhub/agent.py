@@ -16,14 +16,22 @@ from . import config
 
 NAME = "BSR's Agent"
 
+# The voice: a bench colleague. Warm, plain, first-person plural ("we", "let's"), like a friendly
+# bioinformatician at the next desk. Every reply that used the Hub ends with SIGNATURE, so people
+# can always tell when they're talking to BSR's configured tools rather than plain Claude.
+SIGNATURE = "— BSR's Agent · Bioinformatics Shared Resource, CSHL · CodeSpring"
+
 STYLE = (
-    f"Speak as {NAME}, the Bioinformatics Shared Resource's assistant. Be warm, plain and brief, like a helpful "
-    "person at the core facility. Never use emojis, check marks, ticks, crosses or other decorative symbols; say "
-    "progress in words. No filler such as 'Great question', 'Certainly', 'I'd be happy to help' or summaries of "
-    "what you just said. Short paragraphs, plain numbers, one question at a time."
+    f"Speak as {NAME}, the Bioinformatics Shared Resource's assistant, in the voice of a bench colleague: warm, "
+    "plain and brief, first-person plural where it fits ('let's look', 'we'd hope to see'), like a friendly "
+    "bioinformatician at the next desk. Never use emojis, check marks, ticks, crosses or other decorative symbols; "
+    "say progress in words. No filler such as 'Great question', 'Certainly', 'I'd be happy to help' or summaries "
+    "of what you just said. Short paragraphs, plain numbers, one question at a time. End the reply with the "
+    f"sign-off line on its own line: {SIGNATURE}"
 )
 
-HELLO = f"Hi, this is {NAME}! I'll help you run the Bioinformatics Shared Resource's RNA-seq pipeline on your data."
+HELLO = (f"Hi, this is {NAME}! Let's take a look at your data. I'll help you run the Bioinformatics Shared "
+         "Resource's RNA-seq pipeline on it.")
 
 ABOUT = (
     "Two pieces work together here. CodeSpringHub is how I see your lab's registered data and BSR's guidance. "
@@ -356,3 +364,28 @@ def qc_report(steps: list[dict], quality: dict[str, dict]) -> str:
     if notes:
         out += "\n\n" + " ".join(notes)
     return out
+
+
+# ---- human connection: offers to bring in a person at BSR ----------------------------------------
+
+CHECK_INS = {
+    "periodic": "Want a second pair of human eyes? I can email the BSR team with a short summary of what we've "
+                "done, or ask them for a time to talk.",
+    "plan": "If you'd like someone at BSR to look over this plan with you first, I can email them a short summary.",
+    "complete": "If you'd like help reading these results, the BSR team is happy to meet: I can email them a "
+                "summary of this run and ask for a time.",
+    "failed": "If you'd rather have a person look at what went wrong, I can email the BSR team a summary of this run.",
+    "lab_setup": "Your lab isn't on CodeSpringHub yet. I can email the BSR team to set it up for you, so I can "
+                 "work with your lab's own data and context.",
+}
+
+
+def check_in(reason: str) -> dict:
+    """An offer to bring in a person at BSR, for Claude to add to its reply in one line."""
+    return {
+        "reason": reason,
+        "say": CHECK_INS.get(reason, CHECK_INS["periodic"]),
+        "how": ("Add `say` as one short line at the end of your reply, just above the sign-off; don't make it a "
+                "question tool or a separate message. If they say yes, call email_bsr (purpose 'question', "
+                "'lab_setup' or 'meeting'), with a short summary of this conversation if they want one."),
+    }
