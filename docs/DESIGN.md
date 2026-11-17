@@ -556,10 +556,15 @@ Claude ──MCP──▶ Hub (runs.py) ──▶ codespring-run (CodeSpringApp,
   that submits each step when the previous one has finished and judges success by the step's
   expected output files. It uses no Slurm allocation (compute nodes don't have the app's R
   packages). If it stops (login node restart), `resume` continues; finished steps are kept.
-- **Deep links + one-time tickets** (CodeSpringApp): `?ticket=…&project=rna/<name>&view=results`
-  opens that project on the Results Explorer. The ticket is a single-use file the Hub writes in
-  `~/.codespringweb/open_tickets/` (600, 15-minute expiry), so the app's long-lived access token
-  never enters a chat. Only the person's own saved projects can be opened.
+- **Deep links + one-time tickets** (CodeSpringApp): `?project=rna/<name>&view=results#ticket=…`
+  opens that project on the Results Explorer. It works like the portal's links: the ticket is a
+  single-use file the Hub writes in `~/.codespringweb/open_tickets/` (600, 15-minute expiry), so the
+  app's long-lived access token never enters a chat, and it sits in the `#fragment`, which browsers
+  never send, so link previews and prefetches can't use it up. The app's page moves it into the
+  address, spends it, and answers with a redirect that gives the browser an HttpOnly key cookie
+  (name unique per app launch), so reloads and reconnects keep working for the life of that app.
+  A shared app started before its code changed is restarted by the Hub when it next needs one, as
+  the portal is. Only the person's own saved projects can be opened.
 
 ### 13.2 Guardrails (who enforces what)
 

@@ -7,6 +7,7 @@ without a confirmed, unchanged, unexpired, single-use plan, and how results are 
 
 import json
 import os
+import socket
 import stat
 import sys
 import time
@@ -248,10 +249,10 @@ def test_results_open_through_a_one_time_link_not_the_app_token(suite, monkeypat
     monkeypatch.setattr(runs, "_running_app", lambda: (24567, True))
     runs.start_analysis(USER, plan()["plan_id"], user_confirmed=True)
     link = runs.open_results(USER, "rna/exp1")
-    assert link["link"].startswith("http://localhost:24567/?ticket=") and "token=" not in link["link"]
-    assert "project=rna/exp1&view=results" in link["link"]
+    assert link["link"].startswith("http://localhost:24567/?project=rna/exp1&view=results#ticket=")
+    assert "token=" not in link["link"] and "?ticket=" not in link["link"]
     assert link["tunnel_command"].startswith(f"ssh -N -L 24567:localhost:24567 {USER}@")
-    ticket = link["link"].split("ticket=")[1].split("&")[0]
+    ticket = link["link"].split("#ticket=")[1]
     f = tmp_path / "home" / ".codespringweb" / "open_tickets" / ticket
     assert stat.S_IMODE(f.stat().st_mode) == 0o600
     assert 0 < float(f.read_text()) - time.time() <= config.OPEN_LINK_TTL_SECONDS
@@ -291,7 +292,7 @@ def test_open_app_gives_one_link_to_codespringapp_itself(suite, monkeypatch, tmp
     monkeypatch.setattr(runs, "ports_forwarded", lambda: True)
     monkeypatch.setattr(editing, "codespringapp_port", lambda u: 31804)
     out = runs.open_app(USER)
-    assert out["link"].startswith("http://localhost:31804/?ticket=") and "project=" not in out["link"]
+    assert out["link"].startswith("http://localhost:31804/#ticket=") and "project=" not in out["link"]
     assert out["say"].startswith(f"**[Open CodeSpringApp]({out['link']})**") and not out["needs_tunnel"]
 
 
@@ -362,7 +363,7 @@ def test_the_links_come_in_the_preview_not_before_a_tool_call(suite, monkeypatch
     from test_server import call
     hub_link = {"link": "http://localhost:41000/#ticket=a", "port": 41000, "host": "bamdev1.cshl.edu",
                 "needs_tunnel": True}
-    app_link = {"link": "http://localhost:21000/?ticket=b", "port": 21000, "host": "bamdev1.cshl.edu",
+    app_link = {"link": "http://localhost:21000/#ticket=b", "port": 21000, "host": "bamdev1.cshl.edu",
                 "needs_tunnel": True}
     monkeypatch.setattr(portal_launch, "open_portal", lambda u: hub_link)
     monkeypatch.setattr(runs, "open_app", lambda u: app_link)
@@ -377,7 +378,7 @@ def test_the_links_come_in_the_preview_not_before_a_tool_call(suite, monkeypatch
     assert preview.count("ssh -N") == 1 and "-L 41000:localhost:41000 -L 21000:localhost:21000" in preview
     assert preview.index("**Steps**") < preview.index("**Your links**") < preview.index("ssh -N")
     assert preview.index("ssh -N") < preview.index("[Open CodeSpringHub](http://localhost:41000/#ticket=a)")
-    assert "[Open CodeSpringApp](http://localhost:21000/?ticket=b)" in preview
+    assert "[Open CodeSpringApp](http://localhost:21000/#ticket=b)" in preview
     assert preview.rstrip().endswith("Rad Utama (utama@cshl.edu).") and "links" in p["next"]
     assert _no_symbols(preview)
 
@@ -469,7 +470,7 @@ def test_start_gives_a_live_link_and_says_when_a_tunnel_is_needed(suite, monkeyp
     monkeypatch.setattr(runs, "_running_app", lambda: (31804, True))
     monkeypatch.setattr(runs, "ports_forwarded", lambda: False)
     started = runs.start_analysis(USER, plan()["plan_id"], user_confirmed=True)
-    assert "[Open the live progress page in CodeSpringApp](http://localhost:31804/?ticket=" in started["say"]
+    assert "[Open the live progress page in CodeSpringApp](http://localhost:31804/?project=rna/exp1&view=progress#ticket=" in started["say"]
     assert "view=progress" in started["say"] and "ssh -N -L 31804:localhost:31804" in started["say"]
     assert "refresh the app's page" in started["say"]
     assert started["live_progress"]["needs_tunnel"] is True
@@ -759,3 +760,56 @@ def test_no_forward_without_a_connect_login(tmp_path, monkeypatch):
              290: ("sshd", 1, ["sshd: me@pts/0"]),  # the portal in someone's terminal is not the Hub
              400: ("vim", 390, ["vim"]), 390: ("sshd", 1, ["sshd: me@pts/1"])}
     assert runs.ports_forwarded(_fake_proc(tmp_path, procs)) is False
+
+
+# ---- a shared CodeSpringApp started before its code changed is restarted, like the portal ----------
+
+def _fake_app(tmp_path, monkeypatch, cmdline, code_mtime):
+    import subprocess as sp
+    home = tmp_path / "apphome"
+    home.mkdir()
+    monkeypatch.setattr(runs, "_app_home", lambda: home)
+    suite = tmp_path / "suite"
+    (suite / "CodeSpringApp" / "R").mkdir(parents=True)
+    app_r = suite / "CodeSpringApp" / "app.R"
+    app_r.write_text("# app")
+    monkeypatch.setattr(config, "CODESPRING_SUITE", suite)
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen()
+    port = srv.getsockname()[1]
+    proc = sp.Popen(["sleep", "60"])
+    (home / f"codespringweb_{port}.url").write_text("x")
+    pid_file = home / f"codespringweb_{port}.pid"
+    pid_file.write_text(str(proc.pid))
+    os.utime(app_r, (code_mtime(pid_file.stat().st_mtime),) * 2)
+    monkeypatch.setattr(runs, "_cmdline", lambda pid: cmdline.format(suite=suite))
+    return srv, proc, port
+
+
+def test_a_shared_app_older_than_its_code_is_restarted(tmp_path, monkeypatch):
+    srv, proc, port = _fake_app(tmp_path, monkeypatch, "R -e shiny::runApp('{suite}/CodeSpringApp', port=1)", lambda t: t + 60)
+    try:
+        assert runs._running_app() is None
+        assert proc.wait(timeout=5) is not None
+    finally:
+        srv.close()
+        proc.kill()
+
+
+def test_a_current_shared_app_and_a_personal_app_are_left_running(tmp_path, monkeypatch):
+    srv, proc, port = _fake_app(tmp_path, monkeypatch, "R -e shiny::runApp('{suite}/CodeSpringApp', port=1)", lambda t: t - 60)
+    try:
+        assert runs._running_app() == (port, True) and proc.poll() is None
+    finally:
+        srv.close()
+        proc.kill()
+
+
+def test_a_personal_app_is_never_stopped_even_when_the_shared_code_changed(tmp_path, monkeypatch):
+    srv, proc, port = _fake_app(tmp_path, monkeypatch, "R -e shiny::runApp('.', port=1)", lambda t: t + 60)
+    try:
+        assert runs._running_app() == (port, False) and proc.poll() is None
+    finally:
+        srv.close()
+        proc.kill()
