@@ -113,25 +113,46 @@ def test_missing_or_unknown_steps_give_nothing(tmp_path):
     assert qc.step_qc(make_results(tmp_path / "res"), "RSEM") is None
 
 
-def test_status_shows_a_table_and_reports_each_steps_quality_once(suite, tmp_path):  # noqa: F811
+def test_every_run_gets_the_same_checks_against_bsr_guides(tmp_path):
+    res = make_results(tmp_path / "res")
+    star = qc.checks("STAR", qc.step_qc(res, "STAR"))
+    assert star[0] == {"check": "Uniquely mapped", "result": "81.4%", "guide": "70% or more", "status": "OK"}
+    assert [r["check"] for r in star] == ["Uniquely mapped", "Mapped to several places", "Unmapped"]
+    fq = qc.step_qc(res, "FastQC")
+    assert [r["check"] for r in qc.checks("FastQC", fq, fq["species"])] == [
+        "Unexpected FastQC failures", "Reads from mouse (FastQ Screen)", "rRNA (FastQ Screen)", "GC content"]
+    assert qc.checks("DESeq2", qc.step_qc(res, "DESeq2"))[0]["result"] == "3 (2 up, 1 down)"
+    poor = make_results(tmp_path / "poor", low_sample=True)
+    rows = qc.checks("STAR", qc.step_qc(poor, "STAR"))
+    assert rows[0]["status"] == "Check" and qc.verdict(rows) == "Worth a look"
+
+
+def test_status_shows_one_line_per_step_then_the_standard_report(suite, tmp_path):  # noqa: F811
     run_id = _start(suite)
     res = make_results(tmp_path / "res")
     status = suite / "CodeSpringApp" / "bin" / "status.json"
     status.write_text(json.dumps({"state": "running", "results_dir": str(res), "steps": [
         {"step": "Cutadapt", "state": "complete"}, {"step": "STAR", "state": "running", "samples_done": 1,
                                                     "samples_total": 2}, {"step": "featureCounts", "state": "waiting"}]}))
-    st = runs.analysis_status(USER, run_id)
-    assert st["just_finished"] == ["Cutadapt"] and "report on what just finished (trimming)" in st["next"]
-    assert "| 1 | Trimming | Cutadapt | Done | 100.0% of read pairs kept; adapters in 2.8-3.7% |" in st["table"]
-    assert "| 2 | Alignment | STAR | Running (1 of 2 samples) |  |" in st["table"]
-    assert "| 3 | Gene counts | featureCounts | Waiting |  |" in st["table"]
-    assert st["say"].startswith("Done: trimming.") and st["table"] in st["say"]
+    st = runs.analysis_status(USER, run_id, wait_seconds=0)
+    assert st["just_finished"] == ["Cutadapt"]
+    assert st["say"] == ("**Step 1 of 3 done: Trimming (Cutadapt).** Read pairs kept after trimming: 100.0% "
+                         "(BSR guide 90% or more). Looks good.")
+    assert "quality" not in st and "table" not in st  # the payload stays small: say is all Claude shows
     assert _no_symbols(json.dumps(st, ensure_ascii=False))
+    # Asked how it's going: the status table and the quality so far.
     again = runs.analysis_status(USER, run_id)
-    assert again["just_finished"] == [] and "report on what just finished" not in again["next"]
+    assert again["just_finished"] == [] and "| 2 | Alignment | STAR | Running (1 of 2 samples) |  |" in again["say"]
+    assert "| Trimming | Input read pairs per sample | 1.00 M |  |  |" in again["say"]
+    # Following and nothing changed: nothing to show.
+    quiet = runs.analysis_status(USER, run_id, wait_seconds=1)
+    assert quiet["say"] == "" and "show nothing" in quiet["next"]
     status.write_text(json.dumps({"state": "complete", "results_dir": str(res), "steps": [
         {"step": "Cutadapt", "state": "complete"}, {"step": "STAR", "state": "complete"},
         {"step": "featureCounts", "state": "complete"}]}))
     done = runs.analysis_status(USER, run_id)
     assert done["just_finished"] == ["STAR", "featureCounts"]
-    assert "81.4% uniquely mapped" in done["say"] and "Need help? Contact BSR support" in done["say"]
+    assert done["say"].startswith(f"**All 3 steps are done.** Your results are in `{res}`.")
+    assert "| Alignment | Uniquely mapped | 81.4% | 70% or more | OK |" in done["say"]
+    assert "| Gene counts | Reads assigned to genes |" in done["say"]
+    assert "Need help? Contact BSR support" in done["say"] and "analysis_report" in done["next"]

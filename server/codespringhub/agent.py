@@ -23,10 +23,16 @@ STYLE = (
     "what you just said. Short paragraphs, plain numbers, one question at a time."
 )
 
-HELLO = (f"Hello! This is {NAME}. I'm here to help you set up and run the Bioinformatics Shared Resource's "
-         "RNA-seq pipeline on your data.")
-GREETING = (HELLO + "\n\nBefore we start, I'm going to ask a few questions to clarify the "
-            "analysis. It only takes a moment, and I'll show you the full plan before anything runs.")
+HELLO = f"Hi, this is {NAME}! I'll help you run the Bioinformatics Shared Resource's RNA-seq pipeline on your data."
+
+ABOUT = (
+    "Two pieces work together here. CodeSpringHub is how I see your lab's registered data and BSR's guidance. "
+    "CodeSpringApp is BSR's pipeline app on the cluster: it runs the analysis under your own account, and you can "
+    "watch it live and browse the results there. As soon as your run starts I'll give you a link to it."
+)
+
+GREETING = (HELLO + "\n\n" + ABOUT + "\n\nFirst, a few quick questions. Nothing runs until you've seen the full "
+            "plan and said go.")
 
 RNASEQ_SUMMARY = (
     "BSR's RNA-seq pipeline trims adapter sequences from your reads, checks read quality, aligns the reads to the "
@@ -183,80 +189,65 @@ def _steps_table(steps: list[dict], genesets: list[str]) -> str:
     return "\n".join(rows)
 
 
-def _answers_line(genesets: list[str], quantifiers: list[str], run_mode: str, email: dict | None = None) -> str:
-    """'Your answers: CodeSpringApp pipeline, MSigDB Hallmark 2020 gene sets, no extra quantification, ...'"""
-    sets = _join_words([g.replace("_", " ") for g in genesets]) + (" gene sets" if genesets else "")
-    names = {"rsem": "RSEM", "kallisto": "Kallisto"}
-    extra = (_join_words([names.get(q, q) for q in quantifiers]) + " quantification") if quantifiers \
-        else "no extra quantification"
-    mode = "one step at a time" if run_mode == "step" else "all steps at once"
-    parts = ["CodeSpringApp pipeline"] + ([sets] if genesets else ["no pathway analysis"]) + [extra, mode]
-    if isinstance(email, dict):
-        every = email.get("every_hours") or 0
-        parts.append("email updates" + (f" every {every} h" if every else " as each step finishes"))
-    else:
-        parts.append("no email updates")
-    return "**Your answers:** " + ", ".join(parts) + "."
+def _genesets_words(genesets: list[str]) -> str:
+    return ", ".join(g.replace("_", " ") for g in genesets) if genesets else "None (no pathway analysis)"
 
 
-def _storage_paragraph(plan: dict) -> str:
-    """Where results go, free space, raw data size, the expected range and the verdict, in words."""
+def _storage_cell(plan: dict) -> str:
+    """One line: what the run needs, what is free, and the verdict."""
     st = plan.get("storage") or {}
     if not st:
-        return "**Storage:** I couldn't check storage for this run."
-    where = st.get("results_location", "")
-    if plan.get("project_name") and where.rstrip("/").endswith("/" + plan["project_name"]):
-        where = where.rstrip("/").rsplit("/", 1)[0]
-    raw, est, verdict = st.get("raw_input") or {}, st.get("rnaseq_estimate") or {}, st.get("verdict", "")
-    text = (f"**Storage:** Results go to `{where}`, which has {st.get('free', '?')} free "
-            f"({st.get('total', '?')} filesystem, {st.get('used_percent', '?')}% used).")
-    if raw:
-        text += f" The raw data is {raw.get('fastq_files', '?')} FASTQ files, {raw.get('size', '?')} in total."
-    if est:
-        text += (f" This pipeline usually writes {est.get('range', '?')}, about {est.get('typical', '?')} in a "
-                 "typical run. Most of that is STAR's BAM files.")
+        return "Couldn't be checked for this run"
+    est, verdict = st.get("rnaseq_estimate") or {}, st.get("verdict", "")
+    text = f"Needs about {est.get('typical', '?')} ({est.get('range', '?')}); {st.get('free', '?')} free."
     if verdict.startswith("not enough"):
-        text += (f" There isn't enough space: please free some up (at least {est.get('recommended_free', '?')}) "
-                 "or ask BSR before starting.")
-    elif verdict.startswith("tight"):
-        text += f" Space is tight, so have at least {est.get('recommended_free', '?')} free before starting."
-    else:
-        text += " There is enough space."
-    return text
+        return text + f" Not enough: free at least {est.get('recommended_free', '?')} or ask BSR first."
+    if verdict.startswith("tight"):
+        return text + f" Tight: have at least {est.get('recommended_free', '?')} free before starting."
+    return text + " Enough space."
 
 
 def rnaseq_preview(plan: dict, dataset_id: str, species: str, compare: dict | None, genesets: list[str],
                    quantifiers: list[str], run_mode: str, email: dict | None = None) -> str:
-    """BSR's Agent introduces the plan, shows the steps it will run, then who to reach for help."""
-    what = f"{len(plan.get('samples') or [])} {species} samples"
+    """The plan, once: a one-line summary, every setting in one table, the steps, then who to ask.
+
+    It names BSR's Agent at the top because some apps fold the greeting (written before a question
+    tool) away, and this preview is the message the person is sure to see."""
+    n = len(plan.get("samples") or [])
+    what = f"{n} {species} samples"
     if compare:
-        what = f"{compare.get('comparison')} vs {compare.get('reference')} for {what}"
+        what = f"{compare.get('comparison')} vs {compare.get('reference')} across {what}"
     ref = _reference_words(plan.get("reference", ""), species)
-    if ref:
-        what += f" on {ref}"
-    mode = "one step at a time, pausing for you after each" if run_mode == "step" else "all at once"
-    storage = plan.get("storage") or {}
-    est = storage.get("rnaseq_estimate") or {}
-    verdict = storage.get("verdict", "")
-    if not storage:
-        space = "I couldn't check storage for this run."
-    elif verdict.startswith("not enough"):
-        space = (f"Heads up: it needs about {est.get('typical', '?')} and only {storage.get('free', '?')} is free, "
-                 "so we'll need to free some space first.")
-    else:
-        space = f"It needs about {est.get('typical', '?')} and you have {storage.get('free', '?')} free"
-        space += ", which is a little tight." if verdict.startswith("tight") else ", so you're all set."
-    head = f"{HELLO}\n\n{_answers_line(genesets, quantifiers, run_mode, email)}\n\n{_storage_paragraph(plan)}"
-    intro = (f"I'm BSR's Agent, and your RNA-seq plan is ready! We'll compare {what}, running {mode} "
-             f"on the cluster under your account. {space} Your results will go to "
-             f"`{plan.get('results_dir', '')}`.")
+    mode = "one step at a time, pausing for you after each" if run_mode == "step" else "all steps at once"
+    summary = (f"We'll compare {what}" + (f" on {ref}" if ref else "") + f", running {mode} under your account.")
+    names = {"rsem": "RSEM", "kallisto": "Kallisto"}
     if isinstance(email, dict):
         every = email.get("every_hours") or 0
-        intro += (f" I'll email {email.get('email_to', 'your CSHL address')} as each step finishes"
-                  + (f", plus a summary every {every} h." if every else "."))
-    help_line = ("If you need any help, reach out to us: "
+        emails = "As each step finishes" + (f", plus a summary every {every} h" if every else "")
+        emails += f" (to {email['email_to']})" if email.get("email_to") else " (to your CSHL address)"
+    else:
+        emails = "None"
+    rows = [
+        ("Pipeline", "CodeSpringApp, BSR's standard RNA-seq pipeline"),
+        ("Data", f"`{dataset_id}`, {n} samples" + (f", {plan['input']['folder']}" if (plan.get('input') or {}).get('folder') else "")),
+    ]
+    if compare:
+        rows.append(("Comparison", f"{compare.get('comparison')} vs {compare.get('reference')} (reference), "
+                                   f"column '{compare.get('column')}'"))
+    rows += [
+        ("Reference genome", plan.get("reference") or "?"),
+        ("Pathway gene sets", _genesets_words(genesets)),
+        ("Extra quantification", _join_words([names.get(q, q) for q in quantifiers]) if quantifiers else "None"),
+        ("Run mode", "One step at a time" if run_mode == "step" else "All steps at once"),
+        ("Email updates", emails),
+        ("Results folder", f"`{plan.get('results_dir', '')}`"),
+        ("Storage", _storage_cell(plan)),
+    ]
+    settings = "| Setting | Choice |\n|---|---|\n" + "\n".join(f"| {k} | {v} |" for k, v in rows)
+    help_line = ("Questions at any point? Reach BSR: "
                  + _join_words([f"{c['name']} ({c['email']})" for c in support()["contacts"]], "or") + ".")
-    return f"{head}\n\n{intro}\n\nHere are the steps I'll run:\n\n{_steps_table(plan.get('steps') or [], genesets)}\n\n{help_line}"
+    return (f"**{NAME}: your RNA-seq plan is ready.** {summary}\n\n{settings}\n\n**Steps**\n\n"
+            f"{_steps_table(plan.get('steps') or [], genesets)}\n\n{help_line}")
 
 
 # ---- while it runs --------------------------------------------------------------------------------
@@ -304,3 +295,54 @@ def progress_line(steps: list[dict]) -> str:
         if items:
             parts.append(f"{label}: {', '.join(items)}.")
     return " ".join(parts)
+
+
+# ---- the standard QC report ------------------------------------------------------------------------
+
+def _title(step: str) -> str:
+    word = STEP_WORDS.get(step, step)
+    return word[:1].upper() + word[1:]
+
+
+def step_line(step: str, q: dict, index: int, total: int) -> str:
+    """One line when a step finishes, e.g. '**Step 3 of 6 done: Alignment (STAR).** Uniquely mapped
+    81.4-82.2% (BSR guide 70% or more). Looks good.' The full table comes with the final report."""
+    from . import qc as qcmod
+    rows = qcmod.checks(step, q, q.get("species", ""))
+    key = next((r for r in rows if r["guide"]), rows[0] if rows else None)
+    line = f"**Step {index} of {total} done: {_title(step)} ({step}).**"
+    if key:
+        guide = key["guide"] if key["guide"] and key["guide"] != key["result"] else ""
+        line += f" {key['check']}: {key['result']}" + (f" (BSR guide {guide})" if guide else "") + "."
+    line += f" {qcmod.verdict(rows, q.get('flags'))}."
+    if q.get("flags"):
+        line += " " + "; ".join(q["flags"]) + "."
+    return line
+
+
+def qc_report(steps: list[dict], quality: dict[str, dict]) -> str:
+    """Every finished step's standard checks in one table, the same rows and guides for every run,
+    then anything worth a look. Empty if no step has finished yet."""
+    from . import qc as qcmod
+    lines = ["| Step | Check | Result | BSR guide | Status |", "|---|---|---|---|---|"]
+    flags, notes = [], []
+    for s in steps:
+        tool = s.get("step", "")
+        q = quality.get(tool)
+        if s.get("state") != "complete" or not q:
+            continue
+        for i, r in enumerate(qcmod.checks(tool, q, q.get("species", ""))):
+            lines.append(f"| {_title(tool) if i == 0 else ''} | {r['check']} | {r['result']} | {r['guide']} | "
+                         f"{r['status']} |")
+        flags += q.get("flags") or []
+        if q.get("usual_for_rnaseq"):
+            notes.append("FastQC warnings on " + _join_words(q["usual_for_rnaseq"]).lower()
+                         + " are normal for RNA-seq libraries and aren't counted.")
+    if len(lines) == 2:
+        return ""
+    out = "\n".join(lines)
+    if flags:
+        out += "\n\n**Worth a look:** " + "; ".join(flags) + ". These are rules of thumb; BSR can help you judge."
+    if notes:
+        out += "\n\n" + " ".join(notes)
+    return out

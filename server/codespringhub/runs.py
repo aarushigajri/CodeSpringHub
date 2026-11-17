@@ -89,6 +89,11 @@ def _cli(command: str, *args: str, spec: dict | None = None, timeout: int = 180)
     if not answer.get("ok"):
         errors = answer.get("errors") or ["unknown problem"]
         errors = [errors] if isinstance(errors, str) else errors
+        usage = next((e for e in errors if str(e).startswith("usage: codespring-run")), None)
+        if usage and f" {command} " not in f" {usage.replace('|', ' ')} ":
+            raise HubError(f"The shared CodeSpringApp is older than the Hub and has no '{command}' command yet, so "
+                           "this can't be done from the chat. Your run and its results aren't affected. BSR: update "
+                           f"the shared install ({config.CODESPRING_SUITE / 'CodeSpringApp'}) to the latest main.")
         raise HubError("CodeSpringApp refused this request:\n- " + "\n- ".join(errors))
     return answer
 
@@ -269,10 +274,9 @@ def plan_analysis(user, dataset_id, project_name, species, fastq_folder="", desi
         "plan": plan,
         "next": ("Make the preview your final message this turn: any other tool calls (including a closing "
                  "or wrap-up tool) come first, and none after it, or the app may fold the preview into a "
-                 "short summary. Your message is `preview` exactly as given, word for word (greeting, the "
-                 "person's answers, storage, the plan intro, the steps table and how to reach BSR), with "
-                 "nothing added before it, nothing left out and no extra summary, then final_prompt's "
-                 "question in plain words (no selection tool). "
+                 "short summary. Your message is `preview` exactly as given, word for word, with nothing added "
+                 "before it, nothing left out and no extra summary (it already has the settings, storage, steps and "
+                 "BSR's contacts), then final_prompt's question in plain words (no selection tool). "
                  + ("Space is short: before the preview, say so in one sentence and suggest freeing space or "
                     "asking BSR. " if not verdict.startswith("enough") else "")
                  + "Only after they pick 'Start pipeline' (or clearly say yes), call start_analysis with this "
@@ -354,25 +358,34 @@ def start_analysis(user, plan_id, user_confirmed=False) -> dict:
                  "started": datetime.now(timezone.utc).isoformat(timespec="seconds")})
     _save_runs(runs)
     step_mode = record["spec"].get("run_mode") == "step"
-    return {
-        "run_id": result["project_id"],
-        "results_folder": result["results_dir"],
-        "steps": [s["step"] for s in record["plan"]["steps"]],
-        "say": (f"Your pipeline has started. Run ID `{result['project_id']}`. "
-                + ("I'll stop after each step, tell you how it went and wait for you before going on."
-                   if step_mode else "I'll update you as each step finishes.")),
-        "next": ("Show `say` as is. " + _follow_rule() + " " + agent.STYLE),
-    }
+    say = (f"Your pipeline has started (run `{result['project_id']}`). "
+           + ("I'll stop after each step, tell you how it went and wait for you before going on."
+              if step_mode else "I'll note each step as it finishes and give you the full quality report at the end."))
+    out = {"run_id": result["project_id"], "results_folder": result["results_dir"],
+           "steps": [s["step"] for s in record["plan"]["steps"]]}
+    try:
+        live = open_results(user, result["project_id"], view="progress")
+    except HubError:
+        live = None
+    if live and live.get("link"):
+        out["live_progress"] = live
+        say += f"\n\n**Watch it live in CodeSpringApp:** [open the progress page]({live['link']})"
+        if live.get("needs_tunnel"):
+            say += (" (first run this on your laptop, on CSHL Wi-Fi or VPN, and leave it open: "
+                    f"`{live['tunnel_command']}`)")
+        say += ". The link works once, for 15 minutes; ask me for a new one any time."
+    out["say"] = say
+    out["next"] = "Show `say` as is. " + _follow_rule() + " " + agent.STYLE
+    return out
 
 
 def _follow_rule() -> str:
-    return ("To follow the run, call analysis_status with wait_seconds=45: it returns as soon as a step changes. "
-            "Each time a step finishes (not on every call), report its quality and show `say`. The small example "
-            "dataset takes 15-20 minutes. For real datasets (hours), after the first step finishes stop following "
-            "it: give the open_results progress link and say they can ask 'how's my run?' any time. When it is "
-            "complete, call analysis_report (plots in the chat, a download link for the HTML report) and give the "
-            "open_results link to the Results Explorer. You can't message the person between turns: if they turned "
-            "on email updates, say those will come by email; cancel_analysis stops the run at any point.")
+    return ("To follow the run, call analysis_status with wait_seconds=45 again and again: it returns as soon as a "
+            "step changes, and its `say` tells you what to show (when `say` is empty, show nothing and call again). "
+            "Short runs (the example dataset takes 15-20 minutes): follow to the end. Longer runs (real datasets "
+            "take hours): stop after the first step finishes, point to the live CodeSpringApp link and say they can "
+            "ask 'how's my run?' any time. You can't message the person between turns: if they chose email "
+            "updates, those come by email. cancel_analysis stops the run at any point.")
 
 
 def _own_run(run_id) -> dict:
@@ -427,37 +440,55 @@ def analysis_status(user, run_id, wait_seconds=0) -> dict:
         steps.append(row)
     state = st.get("state")
     quality, just_finished = _quality(run_id, st.get("results_dir"), steps)
+    shown = [s for s in steps if s.get("state") != "skipped"]
+    position = {s.get("step"): i for i, s in enumerate(shown, 1)}
+    lines = [agent.step_line(step, quality[step], position.get(step, 0), len(shown)) for step in just_finished]
     table = agent.status_table(steps, quality)
+    report = agent.qc_report(steps, quality)
     out = {
         "run_id": run_id, "state": state, "summary": agent.progress_line(steps), "error": st.get("error"),
-        "steps": steps, "table": table, "quality": quality, "just_finished": just_finished,
+        "steps": steps, "just_finished": just_finished,
+        "flags": [f for step in just_finished for f in (quality[step].get("flags") or [])],
         "next_actions": st.get("next_actions", []), "results_folder": st.get("results_dir"),
         "updated": st.get("updated"),
     }
-    report = _report_rule(just_finished)
+    following = bool(wait)
+    final = ("This is your final message of the turn, so it stays visible: make any other tool calls first, then "
+             "show `say` exactly as given, adding only what the next sentence asks for. ")
     if state == "paused":
         finished = agent.STEP_WORDS.get(st.get("paused_after"), st.get("paused_after") or "That step")
         out["paused_after"], out["next_step"] = st.get("paused_after"), st.get("next_step")
-        out["say"] = f"{finished[:1].upper() + finished[1:]} is finished. {out['summary']}\n\n{table}"
-        out["next"] = (report + "Show `say`, then ask with a single-choice selection: 'Continue to the next step' "
-                       "(then continue_analysis with user_confirmed=true; RSEM or Kallisto can be added, or "
-                       "RSEM/Kallisto/GSEA skipped, if they ask), 'Stop here for now' or 'Ask for clarification'. "
-                       "'Cancel the run' (cancel_analysis) is also possible. " + agent.STYLE)
+        out["say"] = f"{finished[:1].upper() + finished[1:]} is finished. {out['summary']}\n\n{table}" + \
+            (f"\n\n**Quality so far**\n\n{report}" if report else "")
+        out["next"] = (final + "Then ask in plain words: continue to the next step (then continue_analysis with "
+                       "user_confirmed=true; RSEM or Kallisto can be added, or RSEM/Kallisto/GSEA skipped, if they "
+                       "ask), stop here for now, or cancel the run (cancel_analysis). " + agent.STYLE)
     elif state in ("cancelled", "cancelling"):
         out["say"] = ("The run is stopping." if state == "cancelling" else "The run is cancelled.") + \
             f" Finished steps and their results are kept; it can be resumed later.\n\n{table}"
         out["next"] = "Show `say`. Offer resume_analysis only if they want to carry on. " + agent.STYLE
     elif state in ("failed", "stopped"):
-        out["say"] = agent.with_support(f"The run stopped with a problem. {out['summary']}\n\n{table}")
-        out["next"] = ("Explain the error in plain words, offer resume_analysis if it looks temporary, and show "
-                       "`say` (it has the BSR support block). " + report + agent.STYLE)
+        out["say"] = agent.with_support(f"The run stopped with a problem. {out['summary']}\n\n{table}"
+                                        + (f"\n\n**Quality so far**\n\n{report}" if report else ""))
+        out["next"] = (final + "Before it, explain the error in one or two plain sentences and offer "
+                       "resume_analysis if it looks temporary. " + agent.STYLE)
     elif state == "complete":
-        out["say"] = agent.with_support(f"All done. Your results are ready.\n\n{table}")
-        out["next"] = (report + "Then show `say`, call analysis_report (show its plots and give its one-time download "
-                       "link for the HTML report), and open_results for the Results Explorer link. " + agent.STYLE)
-    else:
-        out["say"] = f"{out['summary']}\n\n{table}"
-        out["next"] = (report + "Show `say` each time a step finishes (not on every call). " + _follow_rule())
+        out["say"] = agent.with_support(
+            f"**All {len(shown)} steps are done.** Your results are in `{st.get('results_dir')}`.\n\n"
+            f"**Quality report**\n\n{report or 'No quality numbers were found in the results folder.'}")
+        out["next"] = (final + "First call analysis_report and open_results (view 'results'); then, after `say`, "
+                       "add the report's download link and the Results Explorer link with its how_to_open (and the "
+                       "tunnel command if needs_tunnel). If either tool fails, say so in one sentence. "
+                       + agent.STYLE)
+    elif lines:
+        out["say"] = "\n\n".join(lines)
+        out["next"] = "Show `say` as is, adding nothing. " + _follow_rule()
+    elif following:
+        out["say"] = ""
+        out["next"] = "Nothing new: show nothing and call analysis_status again with wait_seconds=45."
+    else:  # the person asked how it's going
+        out["say"] = f"{out['summary']}\n\n{table}" + (f"\n\n**Quality so far**\n\n{report}" if report else "")
+        out["next"] = "Show `say` as is. " + agent.STYLE
     return out
 
 
@@ -478,18 +509,6 @@ def _quality(run_id: str, results_dir, steps: list[dict]) -> tuple[dict, list[st
                 _save_runs(records)
             break
     return quality, just_finished
-
-
-def _report_rule(just_finished: list[str]) -> str:
-    if not just_finished:
-        return ""
-    names = ", ".join(agent.STEP_WORDS.get(s, s) for s in just_finished)
-    return (f"Before anything else, report on what just finished ({names}) from `quality`: in two to four plain "
-            "sentences per step, give the key numbers (range across samples), say whether they look good for bulk "
-            "RNA-seq, and name any sample that stands out from the others or appears in `flags`. FastQC modules in "
-            "usual_for_rnaseq are normal for RNA-seq; say so briefly rather than as a problem. For DESeq2 and GSEA "
-            "name a few top genes or gene sets. These are rules of thumb, not a verdict: if something looks off, "
-            "suggest checking with BSR. ")
 
 
 def list_analyses(user) -> list[dict]:
@@ -683,19 +702,42 @@ def open_results(user, run_id, view="results") -> dict:
     host = config.CONNECT_HOST or _laptop_host()
     minutes = config.OPEN_LINK_TTL_SECONDS // 60
     from .editing import codespringapp_port
-    if port == codespringapp_port(user):
-        # The Connect page's Claude Desktop setup forwards this port, so the link usually just works.
-        how = (f"Click the link within {minutes} minutes (it works once). If Claude Desktop was set up from the "
-               "Connect page, it opens straight away. If the page doesn't load, run the tunnel command in a "
-               "terminal on your laptop (CSHL Wi-Fi or VPN), leave it open, and ask for a new link.")
+    forwarded = port == codespringapp_port(user) and ports_forwarded()
+    if forwarded:
+        # The Hub was started by the Connect page's Claude Desktop setup, whose SSH login also forwards
+        # this port to the laptop, so the link opens directly.
+        how = (f"Click the link within {minutes} minutes (it works once). If the page doesn't load, run the tunnel "
+               "command in a terminal on your laptop (CSHL Wi-Fi or VPN), leave it open, and ask for a new link.")
     else:
-        how = ("On your laptop (CSHL Wi-Fi or VPN), run the tunnel command in a terminal and leave it open, "
-               f"then open the link within {minutes} minutes. The link works once; ask again for a new one.")
+        how = ("First run the tunnel command in a terminal on your laptop (CSHL Wi-Fi or VPN) and leave it open; "
+               f"then click the link within {minutes} minutes. The link works once; ask again for a new one.")
     return {
         "link": f"http://localhost:{port}/?ticket={ticket}&project={run_id}&view={view}",
+        "needs_tunnel": not forwarded,
         "tunnel_command": f"ssh -N -L {port}:localhost:{port} {user}@{host}",
         "how_to_open": how,
     }
+
+
+SHELLS = {"bash", "sh", "dash", "zsh", "ksh", "tcsh", "csh", "env"}
+
+
+def ports_forwarded() -> bool:
+    """True when this Hub was started straight from an SSH login (the Connect page's Claude Desktop
+    setup, which forwards the portal and CodeSpringApp ports to the laptop). When something else
+    started it, such as Claude Code on the cluster, nothing is forwarded and a link needs a tunnel."""
+    pid = os.getppid()
+    for _ in range(4):
+        try:
+            comm = Path(f"/proc/{pid}/comm").read_text().strip()
+            if comm.startswith("sshd"):
+                return True
+            if comm not in SHELLS:
+                return False
+            pid = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            return False
+    return False
 
 
 def _laptop_host() -> str:
