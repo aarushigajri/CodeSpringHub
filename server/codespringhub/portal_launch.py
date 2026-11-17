@@ -13,6 +13,7 @@ command as well.
 import getpass
 import json
 import os
+import signal
 import socket
 import subprocess
 import time
@@ -35,18 +36,78 @@ def _alive(pid: int) -> bool:
         return False
 
 
-def running_portal() -> int | None:
-    """This person's portal on this login node, if one is answering: its port."""
+def running_portal(restart_if_stale: bool = True) -> int | None:
+    """This person's portal on this login node, if one is answering: its port.
+
+    A portal started before the Hub's code last changed is still serving the old code (Python
+    loads it once), so new routes such as a report download answer "Unknown portal address".
+    Such a portal is stopped and None returned, so the caller starts a fresh one."""
     try:
-        state = json.loads(state_file().read_text())
+        f = state_file()
+        state = json.loads(f.read_text())
         pid, port = int(state["pid"]), int(state["port"])
+        started = f.stat().st_mtime  # the portal writes this file as it starts
     except (OSError, ValueError, KeyError, TypeError):
         return None
     if not _alive(pid):
         return None
     with socket.socket() as s:
         s.settimeout(2)
-        return port if s.connect_ex(("127.0.0.1", port)) == 0 else None
+        if s.connect_ex(("127.0.0.1", port)) != 0:
+            return None
+    if restart_if_stale and code_changed_since(started) and _stop_portal(pid):
+        return None
+    return port
+
+
+def code_changed_since(when: float) -> bool:
+    """True when the portal's server code or web app sources changed after `when`."""
+    roots = [config.HUB_HOME / "server" / "codespringhub", config.HUB_HOME / "portal" / "src"]
+    files = [config.HUB_HOME / "portal" / "index.html", config.HUB_HOME / "portal" / "package.json"]
+    for root in roots:
+        for folder, dirs, names in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in ("__pycache__", "node_modules")]
+            files.extend(Path(folder) / n for n in names if not n.endswith(".pyc"))
+    for path in files:
+        try:
+            if path.stat().st_mtime > when:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _is_portal_process(pid: int) -> bool:
+    """Guard against a reused pid: only ever stop a process that is really a portal."""
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+    except OSError:
+        return False
+    return "codespringhub-portal" in cmdline or "codespringhub.web" in cmdline
+
+
+def _stop_portal(pid: int, wait_seconds: float = 10) -> bool:
+    """Stop an outdated portal. True once it has exited; False leaves it running (still usable)."""
+    if pid == os.getpid() or not _is_portal_process(pid):
+        return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return False
+    deadline = time.time() + wait_seconds
+    while time.time() < deadline:
+        if not _alive(pid) or _exited(pid):
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def _exited(pid: int) -> bool:
+    """A process that has exited but not yet been reaped (a zombie) still answers kill(pid, 0)."""
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "Z"
+    except (OSError, IndexError):
+        return False
 
 
 def start_portal(wait_seconds: int = 180) -> int:
