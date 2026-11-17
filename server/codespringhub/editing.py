@@ -1,11 +1,11 @@
 """The Hub's write operations, used by the web portal (never exposed to Claude).
 
 Every change:
-  - checks the user may make it (lab-shared: lab members and BSR; personal: only the owner),
+  - checks the user may make it (lab-shared: lab members and BSR; personal/private: only the owner),
   - validates input and explains problems in plain language,
   - writes the file atomically (a crash never leaves half a file),
   - records a local git commit in the right history (the lab's own, or the person's own),
-  - writes a usage-log row (details withheld for personal items).
+  - writes a usage-log row (details withheld for personal and private items).
 """
 
 import json
@@ -37,7 +37,8 @@ CATEGORIES = {
 ASSAYS = ["rna-seq", "scrna-seq", "atac-seq", "chip-seq", "wgs", "wes", "dna-seq", "methylation",
           "proteomics", "imaging", "other"]
 KINDS = ("data", "code")
-SCOPES = ("lab", "personal")
+SCOPES = ("lab", "personal", "private")  # private = only the owner, not their PI
+WHO_CAN_SEE = "Choose who can see it: the lab, you and your PI, or only you."
 YAML_HEADER = "# Managed by the CodeSpringHub portal. Hand edits are fine; keep the structure.\n"
 
 _git_lock = threading.Lock()
@@ -56,7 +57,8 @@ def _write_atomic(path: Path, text: str):
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-")
     with os.fdopen(fd, "w") as fh:
         fh.write(text)
-    os.chmod(tmp, mode)
+    if not acl.inherits(path.parent):  # on GPFS the inherited ACL already fits; chmod would replace it
+        os.chmod(tmp, mode)
     os.replace(tmp, path)
 
 
@@ -73,9 +75,12 @@ def _repo_for(path: Path) -> Path | None:
 
 def _git(repo: Path, *args, env=None, check=True):
     """safe.directory: git refuses repos owned by another user unless told otherwise.
-    core.sharedRepository=group: new git objects stay writable for whoever shares the folder."""
+    core.sharedRepository=group: new git objects stay writable for whoever shares the folder. Not in
+    a folder with inherited GPFS ACLs: there git's chmod would replace them, and inheritance already
+    gives the right people access."""
+    shared = [] if acl.inherits(repo) else ["-c", "core.sharedRepository=group"]
     return subprocess.run(
-        ["git", "-c", f"safe.directory={repo}", "-c", "core.sharedRepository=group", "-C", str(repo), *args],
+        ["git", "-c", f"safe.directory={repo}", *shared, "-C", str(repo), *args],
         check=check, capture_output=True, text=True, env=env,
     )
 
@@ -105,7 +110,7 @@ def _commit(user: str, paths: list[Path], message: str):
                 return  # nothing changed
             _git(repo, "commit", "-q", "-m", f"portal: {message}", "--", *rel, env=env)
         except subprocess.CalledProcessError as e:
-            personal = "/members/" in str(paths[0])
+            personal = "/members/" in str(paths[0]) or "/private/" in str(paths[0])
             store.log_call(user, "portal:history_not_recorded", {"paths": rel}, False, 0,
                            (e.stderr or str(e)).strip()[:500], personal=personal)
 
@@ -132,20 +137,33 @@ def history(user, lab_id, rel_path=None, limit=20) -> list[dict]:
     return [{"commit": c, "author": a, "date": d, "message": m} for c, a, d, m in rows]
 
 
-# ---- personal folders ------------------------------------------------------------------
+# ---- personal and private folders --------------------------------------------------------
 
-def ensure_personal(user, lab) -> Path:
-    """Create (or re-secure) the user's personal folder: owner + the lab's PIs, never BSR.
-    Runs before every personal write, so PI changes take effect on the owner's next save."""
+def _own_folder(lab, user, private: bool) -> Path:
+    return knowledge.private_dir(lab, user) if private else knowledge.personal_dir(lab, user)
+
+
+def secure_own(lab, user, private: bool):
+    folder = _own_folder(lab, user, private)
+    if private:
+        acl.secure_private(folder)
+    else:
+        acl.secure_personal(folder, lab.pis, user)
+
+
+def ensure_personal(user, lab, private: bool = False) -> Path:
+    """Create (or re-secure) the user's own folder. Personal: owner + the lab's PIs, never BSR.
+    Private: owner only. Runs before every such write, so PI changes take effect on the owner's
+    next save. Each folder has its own history, so the PI can't read private files through git."""
     require_member(user, {lab.id: lab}, lab.id)
-    members = lab.dir / "members"
-    members.mkdir(exist_ok=True)
-    folder = knowledge.personal_dir(lab, user)
+    (lab.dir / ("private" if private else "members")).mkdir(exist_ok=True)
+    folder = _own_folder(lab, user, private)
     folder.mkdir(exist_ok=True)
     try:
-        acl.secure_personal(folder, lab.pis, user)
+        secure_own(lab, user, private)
     except (acl.ACLError, OSError) as e:
-        raise HubError(f"Couldn't make your personal folder private, so nothing was saved. Please tell BSR. ({e})")
+        raise HubError(f"Couldn't lock down your {'private' if private else 'personal'} folder, so nothing "
+                       f"was saved. Please tell BSR. ({e})")
     init_history(folder, ["_suggestions/"])
     return folder
 
@@ -175,15 +193,18 @@ def update_lab(user, lab_id, name: str, description: str, projects: list[dict]):
 
 # ---- documents -----------------------------------------------------------------
 
-def _parse_doc_path(rel_path: str) -> tuple[str | None, str]:
-    """'guidance/x.md' -> (None, ...); 'members/ann/notes/x.md' -> ('ann', 'notes/x.md')."""
+def _parse_doc_path(rel_path: str) -> tuple[str | None, str, bool]:
+    """'guidance/x.md' -> (None, ..., False); 'members/ann/notes/x.md' -> ('ann', 'notes/x.md', False);
+    'private/ann/notes/x.md' -> ('ann', 'notes/x.md', True)."""
     parts = Path(rel_path).parts
-    if len(parts) == 4 and parts[0] == "members":
+    if len(parts) == 4 and parts[0] in ("members", "private"):
         owner, inner = parts[1], "/".join(parts[2:])
         if not USERNAME.match(owner):
             raise HubError("Unknown personal folder.")
-        return owner, inner
-    return None, rel_path
+        return owner, inner, parts[0] == "private"
+    if parts and parts[0] in ("members", "private"):
+        raise HubError("Unknown personal folder.")
+    return None, rel_path, False
 
 
 def _check_inner(inner: str, owner: str | None):
@@ -196,63 +217,63 @@ def _check_inner(inner: str, owner: str | None):
         raise HubError("Documents live at context.md or <category>/<name>.md (lowercase, dashes).")
 
 
-def _check_doc_visible(user, lab, rel_path) -> str | None:
-    owner, inner = _parse_doc_path(rel_path)
+def _check_doc_visible(user, lab, rel_path) -> tuple[str | None, bool]:
+    owner, inner, private = _parse_doc_path(rel_path)
     _check_inner(inner, owner)
-    if not can_see(user, lab, owner):
+    if not can_see(user, lab, owner, private):
         raise NotFound("That document doesn't exist (it may have been deleted).")
-    return owner
+    return owner, private
 
 
 def read_document_file(user, lab_id, rel_path) -> dict:
     lab = require_lab(user, knowledge.load_labs(), lab_id)
-    owner = _check_doc_visible(user, lab, rel_path)
+    owner, private = _check_doc_visible(user, lab, rel_path)
     path = lab.dir / rel_path
     if not path.exists():
         raise NotFound("That document doesn't exist (it may have been deleted).")
     can_edit = os.access(path, os.W_OK) and (owner is None or owner == user)
     return {"rel_path": rel_path, "text": path.read_text(), "can_edit": can_edit,
-            "scope": "personal" if owner else "lab", "owner": owner}
+            "scope": "private" if private else "personal" if owner else "lab", "owner": owner}
 
 
 def _writable_doc(user, lab_id, rel_path):
     labs = knowledge.load_labs()
-    owner, inner = _parse_doc_path(rel_path)
+    owner, inner, private = _parse_doc_path(rel_path)
     _check_inner(inner, owner)
     if owner is None:
         lab = require_lab_editor(user, labs, lab_id)
-        return lab, lab.dir / rel_path, None
+        return lab, lab.dir / rel_path, None, False
     lab = require_lab(user, labs, lab_id)
     if owner != user:
         raise Forbidden("Only the owner can change a personal document.")
-    folder = ensure_personal(user, lab)
-    return lab, folder / inner, owner
+    folder = ensure_personal(user, lab, private)
+    return lab, folder / inner, owner, private
 
 
 def save_document(user, lab_id, rel_path, text: str):
-    lab, path, owner = _writable_doc(user, lab_id, rel_path)
+    lab, path, owner, private = _writable_doc(user, lab_id, rel_path)
     if len(text) > 200_000:
         raise HubError("That document is very long (over 200,000 characters). Split it into several documents.")
     if not path.parent.exists():
         path.parent.mkdir()
-        if owner:
+        if owner and not acl.inherits(path.parent.parent):
             os.chmod(path.parent, 0o2700)
     _write_atomic(path, text if text.endswith("\n") else text + "\n")
     if owner:
-        acl.secure_personal(knowledge.personal_dir(lab, user), lab.pis, user)
+        secure_own(lab, user, private)
     _commit(user, [path], "edit personal document" if owner else f"edit {lab_id}/{rel_path}")
     _audit(user, "save_document", {"lab_id": lab_id, "rel_path": rel_path}, lab_id=lab_id, personal=bool(owner))
 
 
 def create_document(user, lab_id, category: str, title: str, scope: str = "lab") -> str:
     if scope not in SCOPES:
-        raise HubError("Choose who can see it: the lab, or just you (and your PI).")
+        raise HubError(WHO_CAN_SEE)
     if category not in CATEGORIES:
         raise HubError(f"Pick one of: {', '.join(CATEGORIES)}.")
     if not title.strip():
         raise HubError("Give the document a title.")
     inner = f"{category}/{slugify(title)}.md"
-    rel_path = f"members/{user}/{inner}" if scope == "personal" else inner
+    rel_path = {"personal": f"members/{user}/{inner}", "private": f"private/{user}/{inner}"}.get(scope, inner)
     lab = require_lab(user, knowledge.load_labs(), lab_id)
     if (lab.dir / rel_path).exists():
         raise HubError("A document with a very similar title already exists. Open that one, or choose another title.")
@@ -267,7 +288,7 @@ def create_document(user, lab_id, category: str, title: str, scope: str = "lab")
 def delete_document(user, lab_id, rel_path):
     if rel_path == "context.md":
         raise HubError("The lab context page can't be deleted; clear its text instead.")
-    lab, path, owner = _writable_doc(user, lab_id, rel_path)
+    lab, path, owner, private = _writable_doc(user, lab_id, rel_path)
     if not path.exists():
         raise NotFound("That document doesn't exist.")
     path.unlink()
@@ -278,7 +299,7 @@ def delete_document(user, lab_id, rel_path):
 # ---- datasets and code ---------------------------------------------------------------
 
 def _datasets_file(user, lab, scope) -> Path:
-    return (ensure_personal(user, lab) if scope == "personal" else lab.dir) / "datasets.yaml"
+    return (lab.dir if scope == "lab" else ensure_personal(user, lab, scope == "private")) / "datasets.yaml"
 
 
 def _load_entries(path: Path) -> list[dict]:
@@ -317,18 +338,19 @@ def _split_dataset_id(user, lab, hub_id: str) -> tuple[str, str]:
         return "lab", short
     if owner != user:
         raise Forbidden("Only the owner can change a personal item.")
-    return "personal", short
+    return ("private" if knowledge.is_private_id(hub_id) else "personal"), short
 
 
 def save_dataset(user, lab_id, entry: dict, original_id: str | None = None) -> str:
-    """Register (or update) data or code. entry['scope']: 'lab' (all lab members) or 'personal'."""
+    """Register (or update) data or code. entry['scope']: 'lab' (all lab members), 'personal'
+    (you and your PI) or 'private' (only you)."""
     lab = require_lab(user, knowledge.load_labs(), lab_id)
     if original_id:
         scope, original_short = _split_dataset_id(user, lab, original_id)
     else:
         scope, original_short = entry.get("scope", "lab"), None
         if scope not in SCOPES:
-            raise HubError("Choose who can see it: the lab, or just you (and your PI).")
+            raise HubError(WHO_CAN_SEE)
         if scope == "lab":
             require_lab_editor(user, {lab.id: lab}, lab.id)
     title = (entry.get("title") or "").strip()
@@ -365,13 +387,14 @@ def save_dataset(user, lab_id, entry: dict, original_id: str | None = None) -> s
     else:
         entries.append(new)
     _write_atomic(path, YAML_HEADER + yaml.safe_dump({"datasets": entries}, sort_keys=False, allow_unicode=True))
-    if scope == "personal":
-        acl.secure_personal(knowledge.personal_dir(lab, user), lab.pis, user)
+    if scope != "lab":
+        secure_own(lab, user, scope == "private")
     verb = "update" if existing else "register"
-    _commit(user, [path], f"{verb} {kind} {'(personal)' if scope == 'personal' else lab_id + '/' + ds_id}")
+    _commit(user, [path], f"{verb} {kind} {f'({scope})' if scope != 'lab' else lab_id + '/' + ds_id}")
     _audit(user, "save_dataset", {"lab_id": lab_id, "dataset": ds_id, "kind": kind}, lab_id=lab_id,
-           personal=scope == "personal")
-    return f"ds:{lab_id}/~{user}/{ds_id}" if scope == "personal" else f"ds:{lab_id}/{ds_id}"
+           personal=scope != "lab")
+    return {"personal": f"ds:{lab_id}/~{user}/{ds_id}", "private": f"ds:{lab_id}/~{user}/private/{ds_id}"}.get(
+        scope, f"ds:{lab_id}/{ds_id}")
 
 
 def delete_dataset(user, lab_id, hub_id):
@@ -383,8 +406,8 @@ def delete_dataset(user, lab_id, hub_id):
     if len(remaining) == len(entries):
         raise NotFound("That isn't registered.")
     _write_atomic(path, YAML_HEADER + yaml.safe_dump({"datasets": remaining}, sort_keys=False, allow_unicode=True))
-    _commit(user, [path], f"unregister {'(personal)' if scope == 'personal' else lab_id + '/' + short}")
-    _audit(user, "delete_dataset", {"lab_id": lab_id, "dataset": short}, lab_id=lab_id, personal=scope == "personal")
+    _commit(user, [path], f"unregister {f'({scope})' if scope != 'lab' else lab_id + '/' + short}")
+    _audit(user, "delete_dataset", {"lab_id": lab_id, "dataset": short}, lab_id=lab_id, personal=scope != "lab")
 
 
 def datasets_for_portal(user, lab_id) -> list[dict]:
@@ -392,13 +415,13 @@ def datasets_for_portal(user, lab_id) -> list[dict]:
     lab = require_lab(user, knowledge.load_labs(), lab_id)
     out = []
     for d in knowledge.load_datasets(lab).values():
-        if not can_see(user, lab, d.owner):
+        if not can_see(user, lab, d.owner, d.private):
             continue
         can_edit = (d.owner == user) if d.owner else os.access(lab.dir, os.W_OK)
         out.append({
             "id": d.id, "short_id": d.short_id.split("/")[-1], "title": d.title, "kind": d.kind,
             "project": d.project, "assay": d.assay, "description": d.description, "sensitivity": d.sensitivity,
-            "scope": "personal" if d.owner else "lab", "owner": d.owner, "registered_by": d.registered_by,
+            "scope": knowledge.scope_of(d), "owner": d.owner, "registered_by": d.registered_by,
             "registered_on": d.registered_on, "path": d.path, "can_edit": can_edit,
         })
     return out
@@ -499,10 +522,11 @@ def _suggestion_files(user) -> list[tuple[Path, dict, bool]]:
     for lab in knowledge.load_labs().values():
         if not can_access_lab(user, lab):
             continue
-        folders = [(lab.dir / "_suggestions", None)]
-        folders += [(d / "_suggestions", owner) for owner, d in knowledge.member_dirs(lab)]
-        for folder, owner in folders:
-            if not can_see(user, lab, owner):
+        folders = [(lab.dir / "_suggestions", None, False)]
+        folders += [(d / "_suggestions", owner, False) for owner, d in knowledge.member_dirs(lab)]
+        folders += [(d / "_suggestions", owner, True) for owner, d in knowledge.private_dirs(lab)]
+        for folder, owner, private in folders:
+            if not can_see(user, lab, owner, private):
                 continue
             try:
                 files = sorted(folder.glob("*.yaml"))
@@ -513,7 +537,7 @@ def _suggestion_files(user) -> list[tuple[Path, dict, bool]]:
                     rec = yaml.safe_load(f.read_text()) or {}
                 except OSError:
                     continue
-                rec["scope"] = "personal" if owner else "lab"
+                rec["scope"] = "private" if private else "personal" if owner else "lab"
                 can_change = (owner == user) if owner else os.access(f, os.W_OK)
                 out.append((f, rec, can_change))
     return out
@@ -543,7 +567,7 @@ def set_suggestion_status(user, sid: str, status: str):
             rec["status"] = status
             _write_atomic(f, yaml.safe_dump(rec, sort_keys=False, allow_unicode=True))
             _audit(user, "suggestion_status", {"id": sid, "status": status}, lab_id=rec.get("lab_id"),
-                   personal=scope == "personal")
+                   personal=scope != "lab")
             return
     raise NotFound("No such suggestion.")
 

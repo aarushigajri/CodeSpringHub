@@ -168,7 +168,7 @@ function Documents({ ctx, lab, openNew, onChanged }: { ctx: Ctx; lab: Lab; openN
     .map((c) => [c, list.filter((d) => d.category === c)] as [string, DocInfo[]])
     .filter(([, l]) => l.length);
   const groups = groupsOf(docs.filter((d) => d.scope === "lab"));
-  const personal = docs.filter((d) => d.scope === "personal");
+  const personal = docs.filter((d) => d.scope !== "lab");
 
   return (
     <div className="stack">
@@ -195,9 +195,9 @@ function Documents({ ctx, lab, openNew, onChanged }: { ctx: Ctx; lab: Lab; openN
       ))}
       {lab.role !== "bsr" && (
         <>
-          <h3>{lab.role === "pi" ? "Personal (yours, and your members' as PI)" : "Personal: only you and your PI"}</h3>
+          <h3>{lab.role === "pi" ? "Personal (yours, and your members' as PI)" : "Personal: you and your PI, or only you"}</h3>
           {personal.length === 0 ? (
-            <Empty title="No personal documents.">Notes and drafts you're not ready to share with the lab. BSR can't see them.</Empty>
+            <Empty title="No personal documents.">Notes and drafts you're not ready to share with the lab. BSR can't see them. Mark one "Only me" to keep it from your PI too.</Empty>
           ) : (
             <section className="panel">
               <ul className="doc-list">
@@ -205,6 +205,7 @@ function Documents({ ctx, lab, openNew, onChanged }: { ctx: Ctx; lab: Lab; openN
                   <li key={d.id}>
                     <a href={`#/lab/${lab.lab_id}/doc/${d.rel_path}`}>{d.title}</a>
                     <span className="muted small">{d.owner === ctx.me.user ? "you" : d.owner} · {d.category}</span>
+                    {d.scope === "private" && <span className="badge muted">only you</span>}
                   </li>
                 ))}
               </ul>
@@ -220,7 +221,7 @@ function Documents({ ctx, lab, openNew, onChanged }: { ctx: Ctx; lab: Lab; openN
 function NewDocument({ ctx, lab, onClose, onCreated }: { ctx: Ctx; lab: Lab; onClose: () => void; onCreated: () => Promise<void> }) {
   const [category, setCategory] = useState("guidance");
   const [title, setTitle] = useState("");
-  const [scope, setScope] = useState<"lab" | "personal">(lab.can_edit ? "lab" : "personal");
+  const [scope, setScope] = useState<"lab" | "personal" | "private">(lab.can_edit ? "lab" : "personal");
   async function create() {
     const r = await attempt(() => post<{ rel_path: string }>(`/api/labs/${lab.lab_id}/docs`, { category, title, scope }));
     if (r) {
@@ -244,7 +245,7 @@ function NewDocument({ ctx, lab, onClose, onCreated }: { ctx: Ctx; lab: Lab; onC
         })}
       </div>
       <div className="label">Who can see it?</div>
-      <div className="choices two">
+      <div className="choices three">
         <label className={`choice ${scope === "lab" ? "on" : ""}`}>
           <input type="radio" disabled={!lab.can_edit} checked={scope === "lab"} onChange={() => setScope("lab")} />
           <strong>The whole lab</strong>
@@ -252,8 +253,13 @@ function NewDocument({ ctx, lab, onClose, onCreated }: { ctx: Ctx; lab: Lab; onC
         </label>
         <label className={`choice ${scope === "personal" ? "on" : ""}`}>
           <input type="radio" disabled={lab.role === "bsr"} checked={scope === "personal"} onChange={() => setScope("personal")} />
-          <strong>Just me (and my PI)</strong>
-          <span className="muted">Private. Other members and BSR can't see it.</span>
+          <strong>Me and my PI</strong>
+          <span className="muted">Other members and BSR can't see it.</span>
+        </label>
+        <label className={`choice ${scope === "private" ? "on" : ""}`}>
+          <input type="radio" disabled={lab.role === "bsr"} checked={scope === "private"} onChange={() => setScope("private")} />
+          <strong>Only me</strong>
+          <span className="muted">Not your PI, not BSR, not other members.</span>
         </label>
       </div>
       <label>

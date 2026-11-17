@@ -86,6 +86,26 @@ quantification, run mode), a one-table plan preview with the full output folder 
 contacts, then **Start pipeline** or **Ask for clarification**. Support contacts live in
 `knowledge/support_contacts.yaml`.
 
+While it runs:
+
+- **QC after each step**: Cutadapt reads before/after, FastQC's own PASS/WARN/FAIL per module, STAR
+  input reads and uniquely mapped / multi-mapped / unmapped %, featureCounts assigned %, Kallisto
+  pseudoaligned %. Report the numbers; BSR hasn't set pass/fail cut-offs, so don't invent any.
+  FastQC's FAIL flags are FastQC's judgement, and some (e.g. per-base sequence content, duplication)
+  are normal for RNA-seq: say so, and suggest BSR if the researcher is unsure.
+- **At a pause** (one step at a time) the researcher can continue, add RSEM or Kallisto, skip RSEM,
+  Kallisto or GSEA, switch to all at once, or cancel. RSEM/Kallisto can also be added after the run.
+- **Updates**: Claude can't message anyone between turns. The researcher can ask any time, or choose
+  **email updates** when planning: to their own CSHL address only, when a step finishes, fails or
+  pauses, plus an optional summary every 1-24 hours.
+- **Cancel** stops the run's controller and every queued or running Slurm job; finished steps are
+  kept and the run can be resumed.
+- **Larger studies**: per-sample jobs are submitted in waves that stay under the person's Slurm job
+  limit (16 at once on the default QOS), so a 40-sample run doesn't fail at submission.
+- **When it finishes** they get a report packet: one HTML file with the app's plots (PCA, volcano,
+  MA, GSEA dot plots), the QC table, DEG counts and lists, and methods text, all downloadable from
+  the page. Big files (count matrices, BAMs) stay on the cluster; the report lists where.
+
 ## What to tell researchers
 
 - Each step uses the CPU, memory and time limits written into CodeSpringLab's Slurm scripts;

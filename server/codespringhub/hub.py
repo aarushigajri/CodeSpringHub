@@ -3,7 +3,8 @@ shared by the MCP server and the web portal.
 
 Every function takes the acting `user` explicitly and does its own permission checks,
 so the same code is safe whether it is called from stdio, the portal, or (later) a
-multi-user HTTPS service. Personal items are visible only to their owner and the lab's PIs.
+multi-user HTTPS service. Personal items are visible only to their owner and the lab's PIs;
+private items only to their owner.
 """
 
 import os
@@ -13,7 +14,7 @@ from pathlib import Path
 
 import yaml
 
-from . import config, inspect_data, knowledge, store
+from . import acl, config, inspect_data, knowledge, store
 from .errors import Forbidden, HubError, NotFound
 from .permissions import (can_access_lab, can_edit_lab, can_see, is_bsr, is_member, is_pi, require_lab,
                           resolve_asset)
@@ -27,11 +28,11 @@ def accessible_labs(user):
 
 
 def visible_documents(user, lab) -> list[knowledge.Document]:
-    return [d for d in knowledge.load_documents(lab).values() if can_see(user, lab, d.owner)]
+    return [d for d in knowledge.load_documents(lab).values() if can_see(user, lab, d.owner, d.private)]
 
 
 def visible_datasets(user, lab) -> list[knowledge.Dataset]:
-    return [d for d in knowledge.load_datasets(lab).values() if can_see(user, lab, d.owner)]
+    return [d for d in knowledge.load_datasets(lab).values() if can_see(user, lab, d.owner, d.private)]
 
 
 def list_labs(user) -> list[dict]:
@@ -51,7 +52,7 @@ def list_labs(user) -> list[dict]:
 def document_index(user, lab) -> list[dict]:
     return [
         {"id": d.id, "title": d.title, "category": d.category, "rel_path": d.rel_path,
-         "scope": "personal" if d.owner else "lab", "owner": d.owner}
+         "scope": knowledge.scope_of(d), "owner": d.owner}
         for d in visible_documents(user, lab)
     ]
 
@@ -82,7 +83,7 @@ def _split_id(hub_id: str, prefix: str):
 def get_document(user, doc_id) -> knowledge.Document:
     lab = require_lab(user, knowledge.load_labs(), _split_id(doc_id, "doc:"))
     doc = knowledge.load_documents(lab).get(doc_id)
-    if doc is None or not can_see(user, lab, doc.owner):
+    if doc is None or not can_see(user, lab, doc.owner, doc.private):
         raise NotFound(f"No document '{doc_id}'. Use get_lab_context or search_knowledge.")
     return doc
 
@@ -92,7 +93,7 @@ def public_dataset(ds: knowledge.Dataset) -> dict:
     return {
         "id": ds.id, "title": ds.title, "kind": ds.kind, "project": ds.project, "assay": ds.assay,
         "description": ds.description, "sensitivity": ds.sensitivity,
-        "scope": "personal" if ds.owner else "lab", "owner": ds.owner,
+        "scope": knowledge.scope_of(ds), "owner": ds.owner,
         "registered_by": ds.registered_by, "registered_on": ds.registered_on,
     }
 
@@ -100,7 +101,7 @@ def public_dataset(ds: knowledge.Dataset) -> dict:
 def get_dataset(user, dataset_id) -> knowledge.Dataset:
     lab = require_lab(user, knowledge.load_labs(), _split_id(dataset_id, "ds:"))
     ds = knowledge.load_datasets(lab).get(dataset_id)
-    if ds is None or not can_see(user, lab, ds.owner):
+    if ds is None or not can_see(user, lab, ds.owner, ds.private):
         raise NotFound(f"No registered dataset '{dataset_id}'. Use list_datasets to find them.")
     return ds
 
@@ -168,20 +169,21 @@ def list_workflows(assay=None) -> list[dict]:
 
 def suggest_edit(user, lab_id, suggestion, doc_id=None) -> str:
     """Write a suggestion file next to what it is about: in the lab's _suggestions/, or in the
-    owner's personal _suggestions/ for a personal document. People apply it; Claude can't."""
+    owner's own _suggestions/ for a personal or private document. People apply it; Claude can't."""
     lab = require_lab(user, knowledge.load_labs(), lab_id)
-    owner = None
+    owner, private = None, False
     if doc_id:
         doc = get_document(user, doc_id)
         if doc.lab_id != lab_id:
             raise HubError("That document belongs to another lab.")
-        owner = doc.owner
+        owner, private = doc.owner, doc.private
         if owner and owner != user:
             raise Forbidden("Only the owner can add suggestions to a personal document.")
-    folder = (knowledge.personal_dir(lab, user) if owner else lab.dir) / "_suggestions"
+    area = knowledge.private_dir(lab, user) if private else knowledge.personal_dir(lab, user) if owner else lab.dir
+    folder = area / "_suggestions"
     if not folder.exists():
         folder.mkdir()
-        if owner:
+        if owner and not acl.inherits(area):  # on GPFS the inherited ACL already fits; chmod would replace it
             os.chmod(folder, 0o2700)
     sid = f"{store.now()[:19].replace(':', '').replace('-', '')}-{user}-{secrets.token_hex(2)}"
     record = {"id": sid, "ts": store.now(), "user": user, "lab_id": lab_id, "doc_id": doc_id,

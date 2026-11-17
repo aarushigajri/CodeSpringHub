@@ -15,7 +15,7 @@ import functools
 import json
 import sys
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Image, MCPServer
 
 from . import agent, config, hub, portal_launch, runs, store
 from .errors import HubError
@@ -70,8 +70,13 @@ How to work with it:
   5. Follow it with analysis_status(wait_seconds=45). When a step finishes, report its quality
      from `quality` (the steps in `just_finished`: key numbers, whether they look good, any sample
      that stands out), then show `say` (summary and status table). In one-step-at-a-time runs,
-     ask before continue_analysis. When complete,
-     open_results gives a one-time link to CodeSpringApp's Results Explorer.
+     ask before continue_analysis (user_confirmed=true only after they say go on; RSEM or Kallisto
+     can be added and RSEM/Kallisto/GSEA skipped there). cancel_analysis stops a run at any point,
+     also only after they confirm. You cannot message the user between turns: if they chose email
+     updates, those come by email; otherwise they ask you. When complete, call analysis_report
+     (show its plots, give its one-time download link for the HTML report, and summarize the DEG
+     counts and top pathways from it, nothing recalculated), and open_results for the Results
+     Explorer.
 - Show the BSR support contacts (from the tool results) with every plan, finished or failed run,
   and whenever you suggest asking BSR.
 - If the request is novel, uncertain, high-impact, or no BSR workflow fits, say that BSR
@@ -90,7 +95,7 @@ mcp = MCPServer(name="CodeSpringHub", instructions=INSTRUCTIONS, version="0.1.0"
 
 
 RUN_TOOLS = {"check_storage", "plan_analysis", "start_analysis", "analysis_status", "continue_analysis",
-             "resume_analysis", "open_results"}
+             "resume_analysis", "open_results", "analysis_qc", "cancel_analysis", "analysis_report"}
 
 
 def hub_tool(fn):
@@ -313,7 +318,8 @@ def plan_analysis(dataset_id: str, project_name: str, species: str, design: list
                   adapter: str = "Illumina Universal TruSeq RNA", min_length: int = 20,
                   count_by: str = "gene_name", compare: dict | None = None,
                   pathway_geneset: str | None = None, pathway_genesets: list[str] | None = None,
-                  extra_quantification: list[str] | None = None, run_mode: str = "all") -> dict:
+                  extra_quantification: list[str] | None = None, run_mode: str = "all",
+                  email_updates: bool = False, email_every_hours: int = 0) -> dict:
     """Plan a bulk RNA-seq run with BSR's pipeline (CodeSpringApp: cutadapt, FastQC, STAR,
     featureCounts, DESeq2, optional GSEApy, optional RSEM/Kallisto). Checks everything and returns
     the exact plan; nothing is submitted. Inputs: a registered dataset holding the FASTQs
@@ -321,15 +327,17 @@ def plan_analysis(dataset_id: str, project_name: str, species: str, design: list
     columns..., "filename" ("R1,R2" for paired-end)} or design_file (a design_matrix.txt inside the
     dataset); species human or mouse; compare = {"column", "reference", "comparison"} for DESeq2.
     From the analysis_options answers: pathway_genesets (one or more, up to 6), extra_quantification
-    ([], ["rsem"], ["kallisto"] or both) and run_mode ("all" or "step"). Returns `preview` (show it
-    as given, as your final message, with no tool call after it) and final_prompt (Start pipeline /
-    Ask for clarification, asked in plain words, not with a selection tool)."""
+    ([], ["rsem"], ["kallisto"] or both), run_mode ("all" or "step") and email_updates (emails only
+    ever go to the user's own CSHL address; email_every_hours 1-24 adds a regular summary). Returns
+    `preview` (show it as given, as your final message, with no tool call after it) and final_prompt
+    (Start pipeline / Ask for clarification, asked in plain words, not with a selection tool)."""
     return runs.plan_analysis(current_user(), dataset_id, project_name, species, fastq_folder=fastq_folder,
                               design=design, design_file=design_file, paired_end=paired_end,
                               genome_version=genome_version, trim_adapters=trim_adapters, adapter=adapter,
                               min_length=min_length, count_by=count_by, compare=compare,
                               pathway_geneset=pathway_geneset, pathway_genesets=pathway_genesets,
-                              extra_quantification=extra_quantification, run_mode=run_mode)
+                              extra_quantification=extra_quantification, run_mode=run_mode,
+                              email_updates=email_updates, email_every_hours=email_every_hours)
 
 
 @hub_tool
@@ -343,7 +351,7 @@ def start_analysis(plan_id: str, user_confirmed: bool = False) -> dict:
 @hub_tool
 def analysis_status(run_id: str, wait_seconds: int = 0) -> dict:
     """Progress of an analysis started from the Hub: a one-line `summary` in words, a status
-    `table` of the steps, each step's state (with samples done for per-sample steps), any error,
+    `table` of the steps, each step's state (with samples done for per-sample steps), any error, job counts and next_actions,
     and `quality`: per-sample QC from each finished step's own reports (reads kept after trimming,
     FastQC, uniquely mapped %, reads assigned to genes, DE genes, enriched gene sets) with `flags`.
     `just_finished` names the steps whose quality hasn't been reported yet. With wait_seconds (up
@@ -352,9 +360,30 @@ def analysis_status(run_id: str, wait_seconds: int = 0) -> dict:
 
 
 @hub_tool
-def continue_analysis(run_id: str) -> dict:
-    """Start the next step of a run that is paused in one-step-at-a-time mode. Ask the user first."""
-    return runs.continue_analysis(current_user(), run_id)
+def analysis_qc(run_id: str, step: str | None = None) -> dict:
+    """Per-sample QC so far, straight from each tool's own report (step: Cutadapt, FastQC, STAR,
+    featureCounts or Kallisto; all if omitted): reads kept, FastQC PASS/WARN/FAIL modules, STAR
+    uniquely/multi-mapped %, featureCounts assigned %, Kallisto pseudoaligned %."""
+    return runs.analysis_qc(current_user(), run_id, step)
+
+
+@hub_tool
+def continue_analysis(run_id: str, add_quantification: list[str] | None = None,
+                      skip_steps: list[str] | None = None, run_mode: str | None = None,
+                      user_confirmed: bool = False) -> dict:
+    """Start the next step of a run paused in one-step-at-a-time mode, or add extra quantification
+    to a finished run. add_quantification: ["rsem"] and/or ["kallisto"]; skip_steps: RSEM, Kallisto
+    or GSEA if they haven't run; run_mode "all" to run the rest straight through. This submits
+    cluster work: only after the user agreed in this conversation, with user_confirmed=true."""
+    return runs.continue_analysis(current_user(), run_id, add_quantification, skip_steps, run_mode, user_confirmed)
+
+
+@hub_tool
+def cancel_analysis(run_id: str, user_confirmed: bool = False) -> dict:
+    """Stop an analysis at any point: its controller and every queued or running Slurm job.
+    Finished steps and their results are kept, and it can be resumed later. Only after the user
+    confirmed in this conversation, with user_confirmed=true."""
+    return runs.cancel_analysis(current_user(), run_id, user_confirmed)
 
 
 @hub_tool
@@ -364,9 +393,10 @@ def list_analyses() -> list[dict]:
 
 
 @hub_tool
-def resume_analysis(run_id: str) -> dict:
-    """Restart a failed or stopped analysis; finished steps are kept. Ask the user first."""
-    return runs.resume_analysis(current_user(), run_id)
+def resume_analysis(run_id: str, user_confirmed: bool = False) -> dict:
+    """Restart a failed, stopped or cancelled analysis; finished steps are kept. This submits
+    cluster work: only after the user agreed in this conversation, with user_confirmed=true."""
+    return runs.resume_analysis(current_user(), run_id, user_confirmed)
 
 
 @hub_tool
@@ -375,6 +405,19 @@ def open_results(run_id: str, view: str = "results") -> dict:
     the Results Explorer, progress, or logs), plus the SSH tunnel command to run on their laptop.
     Starts their CodeSpringApp on the cluster if it isn't running."""
     return runs.open_results(current_user(), run_id, view)
+
+
+@hub_tool
+def analysis_report(run_id: str, download_link: bool = True):
+    """The post-run report packet: one HTML page with CodeSpringApp's own plots (PCA, volcano, MA,
+    GSEA dot plots), the QC table, DEG counts and top genes, top pathways, methods text, and small
+    files (DEG lists, design, normalized counts) to download; big files are listed with their
+    cluster paths. Rebuilds it from the run's current results (also works mid-run, showing the
+    steps done so far). Returns a summary, a one-time download link for the HTML, and the main
+    plots as images to show in the chat."""
+    out = runs.analysis_report(current_user(), run_id, download_link)
+    plots = out.pop("_plot_files", [])
+    return [json.dumps(out, indent=1, default=str), *[Image(path=p) for p in plots]]
 
 
 @hub_tool

@@ -5,7 +5,7 @@ import { Badge, Empty, Help, attempt } from "../components";
 
 type Suggestion = {
   id: string; ts: string; user: string; lab_id: string; doc_id: string | null; suggestion: string; status: string;
-  scope: "lab" | "personal"; can_change: boolean;
+  scope: "lab" | "personal" | "private"; can_change: boolean;
 };
 type Review = { id: number; key: string; ts: string; user: string; lab_id: string; summary: string; resource_ids: string; status: string };
 
@@ -28,9 +28,11 @@ export default function Inbox({ ctx }: { ctx: Ctx }) {
   const labName = (id: string) => ctx.labs.find((l) => l.lab_id === id)?.name ?? id;
 
   function docLink(s: Suggestion) {
-    // doc:lab/guidance/x -> guidance/x.md ; doc:lab/~ann/notes/x -> members/ann/notes/x.md
+    // doc:lab/guidance/x -> guidance/x.md ; doc:lab/~ann/notes/x -> members/ann/notes/x.md ;
+    // doc:lab/~ann/private/notes/x -> private/ann/notes/x.md
     const inner = s.doc_id ? s.doc_id.split("/").slice(1) : [];
     const rel = !inner.length ? "context.md"
+      : inner[0].startsWith("~") && inner[1] === "private" ? `private/${inner[0].slice(1)}/${inner.slice(2).join("/")}.md`
       : inner[0].startsWith("~") ? `members/${inner[0].slice(1)}/${inner.slice(1).join("/")}.md`
       : `${inner.join("/")}.md`;
     return `#/lab/${s.lab_id}/doc/${rel}?suggestion=${encodeURIComponent(s.suggestion)}`;

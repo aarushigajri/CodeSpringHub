@@ -14,5 +14,6 @@ __pycache__/
 knowledge/*/
 !knowledge/bsr/
 knowledge/*/members/
+knowledge/*/private/
 knowledge/*/_suggestions/
 knowledge/roles.yaml

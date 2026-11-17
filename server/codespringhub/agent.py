@@ -143,6 +143,15 @@ def rnaseq_questions(genesets: list[str] | None = None) -> list[dict]:
              {"label": "One step at a time", "value": "step",
               "description": "I'll stop after each step, tell you how it went, and wait for you before going on."}],
          "default": "all"},
+        {"id": "email_updates", "header": "Emails", "multi_select": False,
+         "question": "Would you like email updates while it runs?",
+         "options": [
+             {"label": "No emails (Recommended)", "value": False,
+              "description": "Ask me how it's going any time."},
+             {"label": "Email me as each step finishes", "value": True,
+              "description": "Sent only to your own CSHL address, also if a step fails or the run stops."}],
+         "default": False,
+         "note": "Pass as email_updates to plan_analysis; email_every_hours (1-24) adds a regular summary if they ask."},
     ]
 
 
@@ -174,7 +183,7 @@ def _steps_table(steps: list[dict], genesets: list[str]) -> str:
     return "\n".join(rows)
 
 
-def _answers_line(genesets: list[str], quantifiers: list[str], run_mode: str) -> str:
+def _answers_line(genesets: list[str], quantifiers: list[str], run_mode: str, email: dict | None = None) -> str:
     """'Your answers: CodeSpringApp pipeline, MSigDB Hallmark 2020 gene sets, no extra quantification, ...'"""
     sets = _join_words([g.replace("_", " ") for g in genesets]) + (" gene sets" if genesets else "")
     names = {"rsem": "RSEM", "kallisto": "Kallisto"}
@@ -182,6 +191,11 @@ def _answers_line(genesets: list[str], quantifiers: list[str], run_mode: str) ->
         else "no extra quantification"
     mode = "one step at a time" if run_mode == "step" else "all steps at once"
     parts = ["CodeSpringApp pipeline"] + ([sets] if genesets else ["no pathway analysis"]) + [extra, mode]
+    if isinstance(email, dict):
+        every = email.get("every_hours") or 0
+        parts.append("email updates" + (f" every {every} h" if every else " as each step finishes"))
+    else:
+        parts.append("no email updates")
     return "**Your answers:** " + ", ".join(parts) + "."
 
 
@@ -212,7 +226,7 @@ def _storage_paragraph(plan: dict) -> str:
 
 
 def rnaseq_preview(plan: dict, dataset_id: str, species: str, compare: dict | None, genesets: list[str],
-                   quantifiers: list[str], run_mode: str) -> str:
+                   quantifiers: list[str], run_mode: str, email: dict | None = None) -> str:
     """BSR's Agent introduces the plan, shows the steps it will run, then who to reach for help."""
     what = f"{len(plan.get('samples') or [])} {species} samples"
     if compare:
@@ -232,10 +246,14 @@ def rnaseq_preview(plan: dict, dataset_id: str, species: str, compare: dict | No
     else:
         space = f"It needs about {est.get('typical', '?')} and you have {storage.get('free', '?')} free"
         space += ", which is a little tight." if verdict.startswith("tight") else ", so you're all set."
-    head = f"{HELLO}\n\n{_answers_line(genesets, quantifiers, run_mode)}\n\n{_storage_paragraph(plan)}"
+    head = f"{HELLO}\n\n{_answers_line(genesets, quantifiers, run_mode, email)}\n\n{_storage_paragraph(plan)}"
     intro = (f"I'm BSR's Agent, and your RNA-seq plan is ready! We'll compare {what}, running {mode} "
              f"on the cluster under your account. {space} Your results will go to "
              f"`{plan.get('results_dir', '')}`.")
+    if isinstance(email, dict):
+        every = email.get("every_hours") or 0
+        intro += (f" I'll email {email.get('email_to', 'your CSHL address')} as each step finishes"
+                  + (f", plus a summary every {every} h." if every else "."))
     help_line = ("If you need any help, reach out to us: "
                  + _join_words([f"{c['name']} ({c['email']})" for c in support()["contacts"]], "or") + ".")
     return f"{head}\n\n{intro}\n\nHere are the steps I'll run:\n\n{_steps_table(plan.get('steps') or [], genesets)}\n\n{help_line}"
@@ -274,6 +292,10 @@ def progress_line(steps: list[dict]) -> str:
             running.append(word)
         elif state == "failed":
             failed.append(word)
+        elif state == "skipped":
+            continue
+        elif state == "cancelled":
+            failed.append(word + " (cancelled)")
         else:
             waiting.append(word)
     parts = []
