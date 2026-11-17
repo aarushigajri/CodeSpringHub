@@ -76,6 +76,77 @@ def test_a_running_portal_is_found_from_its_state_file():
     assert portal_launch.running_portal() is None
 
 
+def _fake_portal(marker: str = "codespringhub-portal"):
+    """A child process that listens on a port; `marker` in its command line makes it look like a portal."""
+    import subprocess
+    import sys
+    code = ("import socket,sys,time; s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen(); "
+            "print(s.getsockname()[1], flush=True); time.sleep(60)")
+    proc = subprocess.Popen([sys.executable, "-c", code, marker], stdout=subprocess.PIPE, text=True)
+    return proc, int(proc.stdout.readline())
+
+
+def _record(pid: int, port: int, started: float):
+    f = portal_launch.state_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps({"pid": pid, "port": port}))
+    os.utime(f, (started, started))
+
+
+def test_code_changes_after_the_portal_started_are_noticed(hub):
+    code = config.HUB_HOME / "server" / "codespringhub" / "web.py"
+    code.parent.mkdir(parents=True, exist_ok=True)
+    code.write_text("# new route")
+    assert portal_launch.code_changed_since(time.time() - 60)
+    assert not portal_launch.code_changed_since(time.time() + 60)
+
+
+def test_a_portal_older_than_the_code_is_stopped_so_a_fresh_one_starts(hub, monkeypatch):
+    proc, port = _fake_portal()
+    try:
+        _record(proc.pid, port, time.time() - 3600)
+        monkeypatch.setattr(portal_launch, "code_changed_since", lambda when: True)
+        assert portal_launch.running_portal(restart_if_stale=False) == port
+        assert portal_launch.running_portal() is None
+        assert proc.wait(timeout=10) is not None
+    finally:
+        proc.kill()
+
+
+def test_an_up_to_date_portal_is_reused(hub, monkeypatch):
+    proc, port = _fake_portal()
+    try:
+        _record(proc.pid, port, time.time())
+        monkeypatch.setattr(portal_launch, "code_changed_since", lambda when: False)
+        assert portal_launch.running_portal() == port and proc.poll() is None
+    finally:
+        proc.kill()
+
+
+def test_a_reused_pid_that_isnt_a_portal_is_never_stopped(hub, monkeypatch):
+    proc, port = _fake_portal(marker="something-else")
+    try:
+        _record(proc.pid, port, time.time() - 3600)
+        monkeypatch.setattr(portal_launch, "code_changed_since", lambda when: True)
+        assert portal_launch.running_portal() == port and proc.poll() is None
+    finally:
+        proc.kill()
+
+
+def test_a_restarted_portal_keeps_its_port_while_old_connections_close():
+    from codespringhub.web import _free_port
+    with socket.socket() as srv:
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen()
+        port = srv.getsockname()[1]
+        client = socket.create_connection(("127.0.0.1", port))
+        conn, _ = srv.accept()
+        conn.close()  # the server side closes first, so its end of the port sits in TIME_WAIT
+        client.close()
+    assert _free_port(port) == port
+
+
 def test_open_portal_gives_a_one_time_link_not_the_secret(hub, monkeypatch):
     usual = editing.portal_port(USER)
     monkeypatch.setattr(portal_launch, "running_portal", lambda: usual)

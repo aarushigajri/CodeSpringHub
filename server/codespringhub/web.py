@@ -306,6 +306,9 @@ class _Unauthorized(Exception):
 
 def _free_port(preferred: int) -> int:
     with socket.socket() as s:
+        # As uvicorn does: without it, connections still closing from a portal that just stopped
+        # make the port look busy, and a restarted portal lands on a random one the laptop can't reach.
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind(("127.0.0.1", preferred))
             return preferred
