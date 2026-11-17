@@ -64,8 +64,10 @@ How to work with it:
      ("Start pipeline" / "Ask for clarification"), as a selection if you can.
   4. start_analysis(plan_id, user_confirmed=true) only after they pick "Start pipeline" or clearly
      say yes. Never start a run the user hasn't confirmed in this conversation.
-  5. Follow it with analysis_status(wait_seconds=45), giving its one-line summary when a step
-     finishes. In one-step-at-a-time runs, ask before continue_analysis. When complete,
+  5. Follow it with analysis_status(wait_seconds=45). When a step finishes, report its quality
+     from `quality` (the steps in `just_finished`: key numbers, whether they look good, any sample
+     that stands out), then show `say` (summary and status table). In one-step-at-a-time runs,
+     ask before continue_analysis. When complete,
      open_results gives a one-time link to CodeSpringApp's Results Explorer.
 - Show the BSR support contacts (from the tool results) with every plan, finished or failed run,
   and whenever you suggest asking BSR.
@@ -336,9 +338,12 @@ def start_analysis(plan_id: str, user_confirmed: bool = False) -> dict:
 
 @hub_tool
 def analysis_status(run_id: str, wait_seconds: int = 0) -> dict:
-    """Progress of an analysis started from the Hub: a one-line `summary` in words, each step's
-    state (with samples done for per-sample steps), and any error. With wait_seconds (up to 45) it
-    waits until a step changes before answering, so following a run takes one call per step."""
+    """Progress of an analysis started from the Hub: a one-line `summary` in words, a status
+    `table` of the steps, each step's state (with samples done for per-sample steps), any error,
+    and `quality`: per-sample QC from each finished step's own reports (reads kept after trimming,
+    FastQC, uniquely mapped %, reads assigned to genes, DE genes, enriched gene sets) with `flags`.
+    `just_finished` names the steps whose quality hasn't been reported yet. With wait_seconds (up
+    to 45) it waits until a step changes before answering, so following a run takes one call per step."""
     return runs.analysis_status(current_user(), run_id, wait_seconds)
 
 

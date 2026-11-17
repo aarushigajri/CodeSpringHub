@@ -68,8 +68,8 @@ STEP_WORDS = {
 
 _DEFAULT_SUPPORT = {
     "team": "Bioinformatics Shared Resource (BSR)",
-    "contacts": [{"name": "James Rouse", "email": "rouse@cshl.edu"},
-                 {"name": "Aarushi Gajri", "email": "gajri@cshl.edu"},
+    "contacts": [{"name": "Aarushi Gajri", "email": "gajri@cshl.edu"},
+                 {"name": "James Rouse", "email": "rouse@cshl.edu"},
                  {"name": "Rad Utama", "email": "utama@cshl.edu"}],
 }
 
@@ -143,61 +143,79 @@ def rnaseq_questions(genesets: list[str] | None = None) -> list[dict]:
 
 # ---- the plan preview -----------------------------------------------------------------------------
 
-def _geneset_words(name: str) -> str:
-    return name.replace("MSigDB_", "").replace("_", " ")
+def _reference_words(reference: str, species: str) -> str:
+    """'Mouse GRCm39 / GENCODE M39' -> 'GRCm39'."""
+    words = (reference or "").split(" / ")[0].split()
+    if len(words) > 1 and words[0].lower() == (species or "").lower():
+        words = words[1:]
+    return " ".join(words)
 
 
-def _steps_words(steps: list[dict], genesets: list[str]) -> str:
-    words = []
-    for s in steps:
-        w = STEP_WORDS.get(s.get("step"), s.get("step", ""))
-        if s.get("step") == "GSEA" and genesets:
-            w = f"pathways ({', '.join(_geneset_words(g) for g in genesets)})"
-        words.append(w)
-    text = ", ".join(words)
-    return text[:1].upper() + text[1:]
+def _join_words(items: list[str], last: str = "and") -> str:
+    if len(items) <= 2:
+        return f" {last} ".join(items)
+    return ", ".join(items[:-1]) + f", {last} {items[-1]}"
 
 
-def _samples_words(plan: dict, species: str, compare: dict | None) -> str:
-    n = len(plan.get("samples") or [])
-    groups = (plan.get("groups") or {}).get((compare or {}).get("column", ""), {}) or \
-        next(iter((plan.get("groups") or {}).values()), {})
-    split = ", ".join(f"{count} {level}" for level, count in groups.items())
-    return f"{n} {species} samples" + (f" ({split})" if split else "")
-
-
-def _storage_words(storage: dict | None, quantifiers: list[str]) -> str:
-    if not storage:
-        return "Not checked"
-    est = storage.get("rnaseq_estimate") or {}
-    text = f"{storage.get('free', '?')} free. This run needs about {est.get('typical', '?')} ({est.get('range', '?')})"
-    if quantifiers:
-        text += ", plus a little for " + " and ".join({"rsem": "RSEM", "kallisto": "Kallisto"}[q] for q in quantifiers)
-    verdict = storage.get("verdict", "")
-    if verdict.startswith("not enough"):
-        text = "Not enough space. " + text
-    elif verdict.startswith("tight"):
-        text = "Tight. " + text
-    return text
+def _steps_table(steps: list[dict], genesets: list[str]) -> str:
+    rows = ["| | Step | Tool | What it does |", "|---|---|---|---|"]
+    for i, s in enumerate(steps, 1):
+        tool = s.get("step", "")
+        name = STEP_WORDS.get(tool, tool)
+        what = s.get("what") or ""
+        if tool == "GSEA" and genesets:
+            what = "Pathway enrichment with " + ", ".join(g.replace("MSigDB_", "").replace("_", " ") for g in genesets)
+        rows.append(f"| {i} | {name[:1].upper() + name[1:]} | {tool} | {what} |")
+    return "\n".join(rows)
 
 
 def rnaseq_preview(plan: dict, dataset_id: str, species: str, compare: dict | None, genesets: list[str],
                    quantifiers: list[str], run_mode: str) -> str:
-    rows = [("Data", f"{_samples_words(plan, species, compare)}, `{dataset_id}`")]
+    """BSR's Agent introduces the plan, shows the steps it will run, then who to reach for help."""
+    what = f"{len(plan.get('samples') or [])} {species} samples"
     if compare:
-        rows.append(("Comparison", f"{compare.get('comparison')} vs {compare.get('reference')}"))
-    rows += [
-        ("Reference", plan.get("reference", "")),
-        ("Steps", _steps_words(plan.get("steps") or [], genesets)),
-        ("Run mode", ("One step at a time" if run_mode == "step" else "All at once") + ", on the cluster under your account"),
-        ("Storage", _storage_words(plan.get("storage"), quantifiers)),
-        ("Output", f"`{plan.get('results_dir', '')}`"),
-    ]
-    table = "\n".join(["### Your RNA-seq plan", "", "| | |", "|---|---|"] + [f"| **{k}** | {v} |" for k, v in rows])
-    return f"{table}\n\n{support()['block']}"
+        what = f"{compare.get('comparison')} vs {compare.get('reference')} for {what}"
+    ref = _reference_words(plan.get("reference", ""), species)
+    if ref:
+        what += f" on {ref}"
+    mode = "one step at a time, pausing for you after each" if run_mode == "step" else "all at once"
+    storage = plan.get("storage") or {}
+    est = storage.get("rnaseq_estimate") or {}
+    verdict = storage.get("verdict", "")
+    if not storage:
+        space = "I couldn't check storage for this run."
+    elif verdict.startswith("not enough"):
+        space = (f"Heads up: it needs about {est.get('typical', '?')} and only {storage.get('free', '?')} is free, "
+                 "so we'll need to free some space first.")
+    else:
+        space = f"It needs about {est.get('typical', '?')} and you have {storage.get('free', '?')} free"
+        space += ", which is a little tight." if verdict.startswith("tight") else ", so you're all set."
+    intro = (f"I'm BSR's Agent, and your RNA-seq plan is ready! We'll compare {what}, running {mode} "
+             f"on the cluster under your account. {space} Your results will go to "
+             f"`{plan.get('results_dir', '')}`.")
+    help_line = ("If you need any help, reach out to us: "
+                 + _join_words([f"{c['name']} ({c['email']})" for c in support()["contacts"]], "or") + ".")
+    return f"{intro}\n\nHere are the steps I'll run:\n\n{_steps_table(plan.get('steps') or [], genesets)}\n\n{help_line}"
 
 
 # ---- while it runs --------------------------------------------------------------------------------
+
+STATUS_WORDS = {"complete": "Done", "running": "Running", "failed": "Stopped with a problem"}
+
+
+def status_table(steps: list[dict], qc: dict[str, dict]) -> str:
+    """The plan's steps with where each one is and, once done, its key quality numbers."""
+    rows = ["| | Step | Tool | Status | Quality |", "|---|---|---|---|---|"]
+    for i, s in enumerate(steps, 1):
+        tool = s.get("step", "")
+        name = STEP_WORDS.get(tool, tool)
+        state = STATUS_WORDS.get(s.get("state"), "Waiting")
+        if s.get("state") == "running" and s.get("samples_total"):
+            state += f" ({s.get('samples_done', 0)} of {s['samples_total']} samples)"
+        headline = (qc.get(tool) or {}).get("headline", "") if s.get("state") == "complete" else ""
+        rows.append(f"| {i} | {name[:1].upper() + name[1:]} | {tool} | {state} | {headline} |")
+    return "\n".join(rows)
+
 
 def progress_line(steps: list[dict]) -> str:
     """One short line in words, e.g. 'Done: trimming. Running: alignment (2 of 6 samples). Still to come: ...'"""
