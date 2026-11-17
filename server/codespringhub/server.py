@@ -16,8 +16,9 @@ import json
 import sys
 
 from mcp.server.mcpserver import Image, MCPServer
+from mcp_types import Icon
 
-from . import agent, config, hub, pipelines, portal_launch, runs, store
+from . import agent, config, contact, hub, pipelines, portal_launch, runs, store
 from .errors import HubError
 from .permissions import current_user
 
@@ -25,6 +26,9 @@ INSTRUCTIONS = """CodeSpringHub connects you to Cold Spring Harbor Laboratory la
 researchers registered, curated by the Bioinformatics Shared Resource (BSR).
 
 Who you are (everyone gets the same):
+- One name: BSR's Agent. Voice: a bench colleague, warm and plain, "let's"/"we" where it fits.
+  End every reply that used a Hub tool with this line on its own (none otherwise):
+  {SIGNATURE}
 - You are BSR's Agent, BSR's assistant. In your first reply that uses the Hub, say "Hi, this is
   BSR's Agent!" and, once, that Hub usage (tools and inputs, not the conversation) is shared with BSR.
 - Be warm, plain and brief, like a helpful person at the core facility. No emojis, check marks or
@@ -66,9 +70,51 @@ Analyses:
 - If the request is novel, uncertain, high-impact or no BSR pipeline fits, say BSR expertise is
   needed and offer request_bsr_review. Show the BSR contacts whenever you suggest asking BSR.
 - If the user tells you something the lab should remember, offer suggest_context_edit.
+
+People, not just tools:
+- A result's `bsr_check_in`: add its `say` as one line above the sign-off. Offer the same when
+  someone asks how to interpret results or which analysis to choose.
+- email_bsr (question, lab_setup, meeting; optional chat summary): show the exact draft, send
+  only after they say yes.
 """
 
-mcp = MCPServer(name="CodeSpringHub", instructions=INSTRUCTIONS, version="0.1.0")
+INSTRUCTIONS = INSTRUCTIONS.replace("{SIGNATURE}", agent.SIGNATURE)
+
+# The name Claude apps may show for this server. One name, BSR's Agent; "Bioinformatics Shared
+# Resource" and "CodeSpring" describe it rather than being names of their own.
+_ICON = ("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2"
+         "NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTQiIGZpbGw9IiMxZjVmOGIiLz48dGV4dCB4PSIzMiIgeT0i"
+         "NDEiIGZvbnQtZmFtaWx5PSJIZWx2ZXRpY2EsQXJpYWwsc2Fucy1zZXJpZiIgZm9udC1zaXplPSIyMiIgZm9udC13ZWlnaHQ9IjcwMCIg"
+         "ZmlsbD0iI2ZmZiIgdGV4dC1hbmNob3I9Im1pZGRsZSI+QlNSPC90ZXh0Pjwvc3ZnPg==")
+mcp = MCPServer(name="CodeSpringHub", title="BSR's Agent: Bioinformatics Shared Resource (CodeSpring)",
+                instructions=INSTRUCTIONS, version="0.1.0",
+                website_url="https://www.cshl.edu/research/cancer/bioinformatics/",
+                icons=[Icon(src=_ICON, mimeType="image/svg+xml", sizes=["64x64"])])
+
+CHECK_IN_EVERY = 6  # Hub tool calls between "talk to a person" offers (natural moments come on top)
+_calls_since_check_in = 0
+NO_CHECK_IN = {"email_bsr", "whoami"}
+
+
+def _with_check_in(name: str, result):
+    """Every few Hub calls, add an offer to bring in a person at BSR. A tool that already made one
+    (after a plan, a finished or failed run) resets the count."""
+    global _calls_since_check_in
+    if isinstance(result, dict) and "bsr_check_in" in result:
+        _calls_since_check_in = 0
+        return result
+    if name in NO_CHECK_IN:
+        return result
+    _calls_since_check_in += 1
+    if _calls_since_check_in < CHECK_IN_EVERY:
+        return result
+    _calls_since_check_in = 0
+    offer = agent.check_in("periodic")
+    if isinstance(result, dict):
+        return result | {"bsr_check_in": offer}
+    if isinstance(result, str):
+        return f"{result}\n\n[bsr_check_in] {offer['say']} ({offer['how']})"
+    return result
 
 
 RUN_TOOLS = {"check_storage", "plan_analysis", "start_analysis", "analysis_status", "continue_analysis",
@@ -85,15 +131,19 @@ def hub_tool(fn):
         try:
             result = fn(*args, **kwargs)
         except Exception as e:
-            _log(user, fn.__name__, kwargs, False, 0, str(e), lab_id=lab_id)
+            _log(user, fn.__name__, {k: kwargs.get(k) for k in ("purpose", "user_confirmed")}
+                 if fn.__name__ == "email_bsr" else kwargs, False, 0, str(e), lab_id=lab_id)
             if fn.__name__ in RUN_TOOLS and isinstance(e, HubError):
                 raise type(e)(agent.with_support(str(e))) from e
             raise
+        result = _with_check_in(fn.__name__, result)
         text = result if isinstance(result, str) else json.dumps(result, default=str)
         if len(text) > config.MAX_OUTPUT_CHARS:
             result = text[: config.MAX_OUTPUT_CHARS] + "\n… [truncated by CodeSpringHub output limit]"
             text = result
-        _log(user, fn.__name__, kwargs, True, len(text), lab_id=lab_id)
+        # An email draft holds the person's words and a chat summary: log only what kind it was.
+        logged = {k: kwargs.get(k) for k in ("purpose", "user_confirmed")} if fn.__name__ == "email_bsr" else kwargs
+        _log(user, fn.__name__, logged, True, len(text), lab_id=lab_id)
         return result
 
     return mcp.tool()(wrapper)
@@ -143,7 +193,11 @@ def list_labs() -> dict:
     projects, your role and, for cores, what you see (shared only, or shared and internal for the
     core's staff), website and contacts. Call this first to find the lab_id other tools need."""
     _note()
-    return {"labs": hub.list_labs(current_user()), "usage_notice": hub.USAGE_NOTICE}
+    labs = hub.list_labs(current_user())
+    out = {"labs": labs, "usage_notice": hub.USAGE_NOTICE}
+    if not any(lab["yours"] for lab in labs):  # not in any lab or core on the Hub yet
+        out["bsr_check_in"] = agent.check_in("lab_setup")
+    return out
 
 
 @hub_tool
@@ -478,6 +532,18 @@ def analysis_report(run_id: str, download_link: bool = True):
     out = runs.analysis_report(current_user(), run_id, download_link)
     plots = out.pop("_plot_files", [])
     return [json.dumps(out, indent=1, default=str), *[Image(path=p) for p in plots]]
+
+
+@hub_tool
+def email_bsr(purpose: str, message: str, chat_summary: str = "", lab_id: str | None = None,
+              dataset_ids: list[str] | None = None, user_confirmed: bool = False) -> dict:
+    """Email the BSR team for the user, with a copy to them (replies go straight to them).
+    purpose: 'question', 'lab_setup' (set up CodeSpringHub for their lab) or 'meeting' (talk through
+    an analysis, its interpretation, or advice). message: their request, in their words.
+    chat_summary: optional short summary of this conversation, if they want it included. Without
+    user_confirmed it returns the exact draft: show it, and call again with user_confirmed=true only
+    after they say send. Also logged as a BSR review ticket."""
+    return contact.email_bsr(current_user(), purpose, message, chat_summary, lab_id, dataset_ids, user_confirmed)
 
 
 @hub_tool

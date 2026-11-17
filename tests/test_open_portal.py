@@ -133,7 +133,7 @@ def test_claude_can_call_open_portal_and_the_prompt_is_listed(hub, monkeypatch):
 
 def test_connect_setup_forwards_the_portal_and_codespringapp_ports(hub):
     info = editing.connect_info(USER)
-    args = info["claude_desktop"]["mcpServers"]["codespringhub"]["args"]
+    args = info["claude_desktop"]["mcpServers"]["BSR Agent"]["args"]
     p, a = info["portal_port"], info["codespringapp_port"]
     assert p == editing.portal_port(USER) and a == editing.codespringapp_port(USER)
     forwards = [args[i + 1] for i, x in enumerate(args) if x == "-L"]

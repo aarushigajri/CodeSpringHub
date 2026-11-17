@@ -667,6 +667,12 @@ def codespringapp_port(username: str) -> int:
     return 20000 + pwd.getpwnam(username).pw_uid % 20000
 
 
+# What Claude Desktop calls the connection. One name for people to recognise; older setups used
+# "codespringhub", which the setup commands remove so nobody ends up with two.
+CONNECTOR_NAME = "BSR Agent"
+OLD_CONNECTOR_NAMES = ("codespringhub",)
+
+
 def _setup_mac(server: dict, target: str, host: str) -> str:
     """A Terminal command that (1) copies the reconnect helper (laptop/connect.py) from the
     cluster to ~/.codespringhub/, and (2) adds CodeSpringHub to Claude Desktop's config through
@@ -683,9 +689,12 @@ if p.exists():
     shutil.copy(p, p.with_name(p.name + ".bak"))
     c = json.loads(p.read_text() or "{{}}")
 ssh = json.loads('{json.dumps(ssh_cmd)}')
-c.setdefault("mcpServers", {{}})["codespringhub"] = {{"command": "/usr/bin/python3", "args": [str(helper), "--"] + ssh}}
+servers = c.setdefault("mcpServers", {{}})
+for old in {list(OLD_CONNECTOR_NAMES)!r}:
+    servers.pop(old, None)
+servers[{CONNECTOR_NAME!r}] = {{"command": "/usr/bin/python3", "args": [str(helper), "--"] + ssh}}
 p.write_text(json.dumps(c, indent=2))
-print("Added CodeSpringHub. Now open Claude Desktop.")
+print("Added {CONNECTOR_NAME}. Now quit and reopen Claude Desktop.")
 EOF"""
 
 
@@ -696,9 +705,9 @@ New-Item -ItemType Directory -Force (Split-Path $p) | Out-Null
 $c = [pscustomobject]@{{}}
 if (Test-Path $p) {{ Copy-Item $p "$p.bak"; $raw = Get-Content $p -Raw; if ($raw) {{ $c = $raw | ConvertFrom-Json }} }}
 if (-not $c.mcpServers) {{ $c | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{{}}) -Force }}
-$c.mcpServers | Add-Member -NotePropertyName codespringhub -NotePropertyValue ('{json.dumps(server)}' | ConvertFrom-Json) -Force
+{"".join(f"$c.mcpServers.PSObject.Properties.Remove('{old}'){chr(10)}" for old in OLD_CONNECTOR_NAMES)}$c.mcpServers | Add-Member -NotePropertyName '{CONNECTOR_NAME}' -NotePropertyValue ('{json.dumps(server)}' | ConvertFrom-Json) -Force
 [IO.File]::WriteAllText($p, ($c | ConvertTo-Json -Depth 10))
-Write-Output 'Added CodeSpringHub. Now open Claude Desktop.'"""
+Write-Output 'Added {CONNECTOR_NAME}. Now quit and reopen Claude Desktop.'"""
 
 
 def connect_info(user, for_user: str | None = None) -> dict:
@@ -729,7 +738,7 @@ def connect_info(user, for_user: str | None = None) -> dict:
     }
     return {
         "user": target, "host": host, "command": command,
-        "claude_desktop": {"mcpServers": {"codespringhub": server}},
+        "claude_desktop": {"mcpServers": {CONNECTOR_NAME: server}},
         "setup_mac": _setup_mac(server, target, host),
         "setup_windows": _setup_windows(server),
         "portal_port": port,

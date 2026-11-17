@@ -133,7 +133,7 @@ export default function Connect({ ctx }: { ctx: Ctx }) {
               <code>{configPath}</code>. <strong>Don't delete what's already there.</strong> Add the{" "}
               <code>mcpServers</code> part below next to the existing settings (inside the outer{" "}
               <code>{"{ }"}</code>, separated by a comma), or, if there's already an <code>mcpServers</code>{" "}
-              section, add just the <code>codespringhub</code> part to it. Then save. (Set up by hand, it won't
+              section, add just the <code>BSR Agent</code> part to it. Then save. (Set up by hand, it won't
               reconnect by itself: restart Claude Desktop if the connection drops.)
             </p>
             <Code text={json} />
@@ -143,13 +143,13 @@ export default function Connect({ ctx }: { ctx: Ctx }) {
         <li>
           <h3>Open Claude Desktop and try it</h3>
           <p>
-            Under <strong>Settings → Developer</strong>, <code>codespringhub</code> should say <em>running</em>. Then ask:
+            Under <strong>Settings → Developer</strong>, <code>BSR Agent</code> should say <em>running</em>. Then ask:
           </p>
-          <Code text={`Using CodeSpringHub, which labs can I use, and what does Claude know about my lab?`} />
+          <Code text={`Ask BSR's Agent: which labs can I use, and what does it know about my lab?`} />
           <p className="muted small">
-            Not listed? Check the command in step 3 printed "Added CodeSpringHub". Listed with an error? Run the{" "}
+            Not listed? Check the command in step 3 printed "Added BSR Agent". Listed with an error? Run the{" "}
             <code>whoami</code> check in step 2 again. The details are in{" "}
-            <code>{os === "mac" ? "~/Library/Logs/Claude/mcp-server-codespringhub.log" : "%APPDATA%\\Claude\\logs\\mcp-server-codespringhub.log"}</code>
+            <code>{os === "mac" ? "~/Library/Logs/Claude/mcp-server-BSR Agent.log" : "%APPDATA%\\Claude\\logs\\mcp-server-BSR Agent.log"}</code>
             , or ask BSR. You can also preview exactly what
             Claude receives on the <a href="#/try">Try it as Claude</a> page.
           </p>
