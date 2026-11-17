@@ -672,6 +672,14 @@ def codespringapp_port(username: str) -> int:
 CONNECTOR_NAME = "BSR Agent"
 OLD_CONNECTOR_NAMES = ("codespringhub",)
 
+# A connector's own instructions are only guidance: Claude calls it when it thinks it needs to. A
+# line in the person's own preferences is followed much more closely, so setup offers this one:
+# pasted into Claude Desktop's profile, and written into Claude Code's ~/.claude/CLAUDE.md.
+BSR_PREFERENCE = ("For any bioinformatics, genomics or sequencing question, or anything about CSHL labs, data "
+                  "or core facilities, use the BSR Agent connector first (call its list_labs tool) and answer "
+                  "as BSR's Agent.")
+PREFERENCE_MARK = "<!-- BSR Agent preference (added by CodeSpringHub setup) -->"
+
 
 def _setup_mac(server: dict, target: str, host: str) -> str:
     """A Terminal command that (1) copies the reconnect helper (laptop/connect.py) from the
@@ -694,6 +702,12 @@ for old in {list(OLD_CONNECTOR_NAMES)!r}:
     servers.pop(old, None)
 servers[{CONNECTOR_NAME!r}] = {{"command": "/usr/bin/python3", "args": [str(helper), "--"] + ssh}}
 p.write_text(json.dumps(c, indent=2))
+# The same preference for Claude Code on this laptop (once; the person's other lines are kept).
+md = pathlib.Path.home() / ".claude" / "CLAUDE.md"
+md.parent.mkdir(parents=True, exist_ok=True)
+old = md.read_text() if md.exists() else ""
+if {PREFERENCE_MARK!r} not in old:
+    md.write_text(old + (chr(10) if old and not old.endswith(chr(10)) else "") + {PREFERENCE_MARK!r} + chr(10) + "- " + {BSR_PREFERENCE!r} + chr(10))
 print("Added {CONNECTOR_NAME}. Now quit and reopen Claude Desktop.")
 EOF"""
 
@@ -707,6 +721,11 @@ if (Test-Path $p) {{ Copy-Item $p "$p.bak"; $raw = Get-Content $p -Raw; if ($raw
 if (-not $c.mcpServers) {{ $c | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{{}}) -Force }}
 {"".join(f"$c.mcpServers.PSObject.Properties.Remove('{old}'){chr(10)}" for old in OLD_CONNECTOR_NAMES)}$c.mcpServers | Add-Member -NotePropertyName '{CONNECTOR_NAME}' -NotePropertyValue ('{json.dumps(server)}' | ConvertFrom-Json) -Force
 [IO.File]::WriteAllText($p, ($c | ConvertTo-Json -Depth 10))
+$md = "$HOME\\.claude\\CLAUDE.md"
+New-Item -ItemType Directory -Force (Split-Path $md) | Out-Null
+if (-not ((Test-Path $md) -and (Select-String -Path $md -SimpleMatch -Quiet '{PREFERENCE_MARK}'))) {{
+  Add-Content -Path $md -Value "`n{PREFERENCE_MARK}`n- {BSR_PREFERENCE}"
+}}
 Write-Output 'Added {CONNECTOR_NAME}. Now quit and reopen Claude Desktop.'"""
 
 
@@ -741,6 +760,7 @@ def connect_info(user, for_user: str | None = None) -> dict:
         "claude_desktop": {"mcpServers": {CONNECTOR_NAME: server}},
         "setup_mac": _setup_mac(server, target, host),
         "setup_windows": _setup_windows(server),
+        "preference": BSR_PREFERENCE,
         "portal_port": port,
         "codespringapp_port": app_port,
         "portal_command": f"ssh -t -L {port}:localhost:{port} {target}@{host} {config.HUB_HOME / 'portal.sh'}",
