@@ -28,7 +28,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config, store
+from . import config, storage, store
 from .errors import Forbidden, HubError, NotFound
 from .hub import get_dataset
 from .permissions import resolve_asset
@@ -123,6 +123,44 @@ def _design_spec(dataset_path: Path, design, design_file):
     return {"design_matrix_path": str(design_file)}
 
 
+def _design_filenames(design, design_path) -> list[str] | None:
+    """The read files a design names (its 'filename' column), or None if it can't be read."""
+    if design:
+        return [str(r.get("filename", "")) for r in design]
+    try:
+        lines = [l for l in Path(design_path).read_text().splitlines() if l.strip()]
+        header = lines[0].split("\t")
+        col = header.index("filename") if "filename" in header else len(header) - 1
+        return [l.split("\t")[col] for l in lines[1:] if len(l.split("\t")) > col]
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _input_storage(fastq_dir: Path, filenames, trim: bool, where: Path | None = None) -> dict:
+    raw, n = storage.raw_fastq_bytes(fastq_dir, filenames)
+    if filenames and n == 0:  # names didn't match; size the whole folder rather than report nothing
+        raw, n = storage.raw_fastq_bytes(fastq_dir)
+    return storage.report(raw, n, trim, where)
+
+
+def check_storage(user, dataset_id=None, fastq_folder="", trim_adapters=True) -> dict:
+    """Free space where this person's results go, plus the RNA-seq estimate for a dataset if given."""
+    _require_self(user)
+    if not dataset_id:
+        out = storage.report()
+    else:
+        ds = get_dataset(user, dataset_id)
+        if ds.kind != "data":
+            raise HubError(f"{dataset_id} is registered as code, not data.")
+        fastq_dir = resolve_asset(ds, fastq_folder)
+        if not fastq_dir.is_dir():
+            raise HubError("fastq_folder must be a folder inside the dataset.")
+        out = _input_storage(fastq_dir, None, bool(trim_adapters))
+        out["input"] = {"dataset": dataset_id, "folder": fastq_folder or "(whole dataset)"}
+    out["next"] = storage.tool_text_rule()
+    return out
+
+
 def plan_analysis(user, dataset_id, project_name, species, fastq_folder="", design=None, design_file="",
                   paired_end=True, genome_version="", trim_adapters=True, adapter="Illumina Universal TruSeq RNA",
                   min_length=20, count_by="gene_name", compare=None, pathway_geneset=None) -> dict:
@@ -157,6 +195,9 @@ def plan_analysis(user, dataset_id, project_name, species, fastq_folder="", desi
     plan.pop("codespringapp", None)
     plan.pop("codespringlab", None)
     plan["input"] = {"dataset": dataset_id, "folder": fastq_folder or "(whole dataset)"}
+    results_dir = Path(plan.get("results_dir") or storage.results_root())
+    plan["storage"] = _input_storage(fastq_dir, _design_filenames(design, design_path), bool(trim_adapters),
+                                     results_dir)
 
     plan_id = f"plan-{secrets.token_hex(8)}"
     record = {"plan_id": plan_id, "user": user, "created": time.time(), "dataset_id": dataset_id, "lab_id": ds.lab_id,
@@ -169,9 +210,10 @@ def plan_analysis(user, dataset_id, project_name, species, fastq_folder="", desi
         "plan_id": plan_id,
         "expires_in_minutes": config.RUN_PLAN_TTL_SECONDS // 60,
         "plan": plan,
-        "next": ("Show this plan to the user in plain language (samples and groups, reference, each step, the "
-                 "comparison, where results go, and that it runs on Slurm under their account). Ask them to "
-                 "confirm. Only after they say yes, call start_analysis with this plan_id and user_confirmed=true."),
+        "next": ("Start with storage: " + storage.tool_text_rule() + " Then show this plan to the user in plain "
+                 "language (samples and groups, reference, each step, the comparison, where results go, and that it "
+                 "runs on Slurm under their account). Ask them to confirm. Only after they say yes, call "
+                 "start_analysis with this plan_id and user_confirmed=true."),
     }
 
 
@@ -223,6 +265,9 @@ def start_analysis(user, plan_id, user_confirmed=False) -> dict:
     if len(active) >= config.MAX_ACTIVE_RUNS:
         raise HubError(f"You already have {len(active)} analyses running from the Hub (the limit is "
                        f"{config.MAX_ACTIVE_RUNS}). Wait for one to finish, or ask BSR.")
+    est = (record["plan"].get("storage") or {}).get("rnaseq_estimate") or {}
+    storage.require_room(est.get("typical_bytes", 0),
+                         Path(record["plan"].get("results_dir") or storage.results_root()))
     result = _cli("start", spec=record["spec"])
     record["used"] = time.time()
     path.write_text(json.dumps(record, indent=2))

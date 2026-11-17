@@ -246,3 +246,59 @@ def test_a_personal_codespringapp_is_not_closed_to_open_results(suite, monkeypat
     runs.start_analysis(USER, plan()["plan_id"], user_confirmed=True)
     out = runs.open_results(USER, "rna/exp1")
     assert out["link"] is None and "exp1" in out["how_to_open"] and "Results Explorer" in out["how_to_open"]
+
+
+# ---- storage --------------------------------------------------------------------------------------
+
+def test_storage_estimate_is_a_range_around_the_measured_run():
+    from codespringhub import storage
+    gb = 1024**3
+    est = storage.estimate_rnaseq(50 * gb)
+    assert est["low_bytes"] < est["typical_bytes"] < est["high_bytes"]
+    assert 6.9 * 50 * gb < est["typical_bytes"] < 7.2 * 50 * gb  # ~7x the gzipped FASTQs
+    assert est["recommended_free"] == storage.human(est["high_bytes"]) and " to " in est["range"]
+    assert storage.estimate_rnaseq(gb, trim=False)["typical_bytes"] < storage.estimate_rnaseq(gb)["typical_bytes"]
+
+
+def test_only_the_fastqs_the_design_names_are_sized(tmp_path):
+    from codespringhub import storage
+    tmp_path = tmp_path / "fq"  # (tmp_path itself also holds the test Hub)
+    tmp_path.mkdir()
+    (tmp_path / "a_R1.fastq.gz").write_bytes(b"x" * 1000)
+    (tmp_path / "a_R2.fastq.gz").write_bytes(b"x" * 1000)
+    (tmp_path / "other.fastq.gz").write_bytes(b"x" * 5000)
+    (tmp_path / "plain.fastq").write_bytes(b"x" * 4000)  # counted as ~1/4 (its gzipped size)
+    (tmp_path / "notes.txt").write_bytes(b"x" * 9999)
+    assert storage.raw_fastq_bytes(tmp_path, ["a_R1.fastq.gz,a_R2.fastq.gz"]) == (2000, 2)
+    assert storage.raw_fastq_bytes(tmp_path) == (8000, 4)
+
+
+def test_check_storage_reports_free_space_and_the_range(suite):
+    out = runs.check_storage(USER, "ds:lab-a/reads", "fastq")
+    assert out["free"] and out["results_location"]
+    assert out["raw_input"]["fastq_files"] == 1 and " to " in out["rnaseq_estimate"]["range"]
+    assert out["verdict"] == "enough space" and "free" in out["next"]
+    assert "rnaseq_estimate" not in runs.check_storage(USER)  # no dataset: free space only
+    with pytest.raises(HubError, match="code"):
+        runs.check_storage(USER, "ds:lab-a/scripts")
+    with pytest.raises(Forbidden):
+        runs.check_storage("ann")
+
+
+def test_the_plan_leads_with_storage_and_a_run_that_cannot_fit_is_refused(suite, monkeypatch):
+    p = plan()
+    st = p["plan"]["storage"]
+    assert st["raw_input"]["fastq_files"] == 1 and "rnaseq_estimate" in st
+    assert p["next"].startswith("Start with storage")
+    from codespringhub import storage
+    monkeypatch.setattr(storage, "free_space", lambda where: {"free_bytes": 10, "free": "10 B"})
+    with pytest.raises(HubError, match="Not started"):
+        runs.start_analysis(USER, p["plan_id"], user_confirmed=True)
+    assert "start" not in [c["cmd"] for c in calls(suite)]
+
+
+def test_claude_is_told_to_talk_about_storage_first():
+    from codespringhub import server
+    assert "check_storage before anything else" in server.INSTRUCTIONS
+    from test_server import call
+    assert "free" in call("check_storage")
