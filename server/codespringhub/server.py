@@ -58,8 +58,9 @@ Analyses:
   Mention nf-core only when no BSR pipeline fits, and say it is not BSR's standard.
 - To run one (bulk RNA-seq so far), in this order: 1. analysis_options before anything else: its
   greeting is your first words, then ask its questions together. 2. Find their dataset.
-  3. check_storage with it: show its `say` (storage, then the CodeSpringHub and CodeSpringApp links).
-  4. plan_analysis: show `preview` word for word as your last message, no tool call after it.
+  3. check_storage with it (if space is short, stop and show its `say`). 4. plan_analysis: show
+  `preview` word for word as your last message, no tool call after it; it holds the storage and the
+  CodeSpringHub and CodeSpringApp links, so they can't be folded away before a tool call.
   5. start_analysis only after the user says "Start pipeline" or yes. 6. analysis_status(wait_seconds=45). Every result's `next` says what to do; follow it. Never
   start, continue, resume or cancel a run without the user's yes in this conversation.
 - If the request is novel, uncertain, high-impact or no BSR pipeline fits, say BSR expertise is
@@ -305,9 +306,9 @@ def analysis_options(assay: str = "rna-seq", dataset_id: str | None = None) -> d
         "style": agent.STYLE,
         "next": ("Write nothing before the greeting: show it word for word as your first words, then ask the "
                  "questions. Once they're answered, find the dataset if you don't have it (list_labs, list_datasets) "
-                 "and call check_storage with it; it gives the storage check and the links. Then plan_analysis with "
+                 "and call check_storage with it. Then plan_analysis with "
                  "pathway_genesets, extra_quantification, run_mode and email_updates from the answers (species, "
-                 "comparison and design come from the dataset)."),
+                 "comparison and design come from the dataset); its preview carries the storage and both links."),
     }
     if dataset_id:
         out["dataset_id"] = dataset_id
@@ -319,21 +320,21 @@ def check_storage(dataset_id: str | None = None, fastq_folder: str = "", trim_ad
     """Call once the analysis_options questions are answered, with the dataset, before plan_analysis
     (or any time someone asks about space). Returns free disk space where their CodeSpringApp results
     go and, given a registered FASTQ dataset (fastq_folder = sub-folder inside it), the raw data size,
-    the low-typical-high range BSR's bulk RNA-seq pipeline writes and a verdict, plus one-time links
-    to CodeSpringHub and CodeSpringApp. Show `say` word for word."""
+    the low-typical-high range BSR's bulk RNA-seq pipeline writes and a verdict. When planning a run,
+    plan_analysis's preview repeats the storage and gives the CodeSpringHub and CodeSpringApp links."""
     user = current_user()
     out = runs.check_storage(user, dataset_id, fastq_folder, trim_adapters)
-    say = agent.storage_say(out)
-    if dataset_id:  # starting a project: give the links to both apps now, not only once a run starts
-        links = _project_links(user)
-        if links:
-            say += ("\n\nHere are your links. CodeSpringHub shows your lab's data and BSR's guidance; "
-                    "CodeSpringApp is where your run will show up.\n\n" + links)
-    out["say"] = say
-    out["next"] = "Show `say` word for word; it already covers the storage and the links."
-    if dataset_id:
-        out["next"] += (" If the verdict isn't 'enough space', stop there: suggest freeing space or asking BSR. "
-                        "Otherwise call plan_analysis next.")
+    out["say"] = agent.storage_say(out)
+    if not dataset_id:
+        out["next"] = "Show `say` word for word."
+    elif str(out.get("verdict", "")).startswith("enough"):
+        # No text before the next tool call: some apps (Claude Desktop) fold it into a summary, which is how
+        # the links used to get lost. The preview, the turn's last message, carries the storage and the links.
+        out["next"] = ("Enough space. Call plan_analysis next without writing anything first; its preview "
+                       "shows the storage and the CodeSpringHub and CodeSpringApp links.")
+    else:
+        out["next"] = ("Show `say` word for word and stop there: suggest freeing space or asking BSR. "
+                       "Don't call plan_analysis.")
     return out
 
 
@@ -373,13 +374,22 @@ def plan_analysis(dataset_id: str, project_name: str, species: str, design: list
     ever go to the user's own CSHL address; email_every_hours 1-24 adds a regular summary). Returns
     `preview` (show it as given, as your final message, with no tool call after it) and final_prompt
     (Start pipeline / Ask for clarification, asked in plain words, not with a selection tool)."""
-    return runs.plan_analysis(current_user(), dataset_id, project_name, species, fastq_folder=fastq_folder,
+    user = current_user()
+    out = runs.plan_analysis(user, dataset_id, project_name, species, fastq_folder=fastq_folder,
                               design=design, design_file=design_file, paired_end=paired_end,
                               genome_version=genome_version, trim_adapters=trim_adapters, adapter=adapter,
                               min_length=min_length, count_by=count_by, compare=compare,
                               pathway_geneset=pathway_geneset, pathway_genesets=pathway_genesets,
                               extra_quantification=extra_quantification, run_mode=run_mode,
                               email_updates=email_updates, email_every_hours=email_every_hours)
+    links = _project_links(user)
+    if links:  # in the preview, the message the person is sure to see, before BSR's contacts
+        block = ("**Your links**\n\nCodeSpringHub shows your lab's data and BSR's guidance; CodeSpringApp is "
+                 "where your run will show up.\n\n" + links)
+        body, sep, contacts = out["preview"].rpartition("\n\nQuestions at any point?")
+        out["preview"] = (body + "\n\n" + block + sep + contacts) if sep else (out["preview"] + "\n\n" + block)
+        out["next"] = out["next"].replace("steps and BSR's contacts", "steps, links and BSR's contacts")
+    return out
 
 
 @hub_tool

@@ -346,7 +346,9 @@ def test_claude_introduces_the_agent_then_asks_then_checks_storage_then_plans():
     assert "free" in out["say"] and "Open" not in out["say"]  # no dataset: just the space, no links
 
 
-def test_check_storage_for_a_project_says_the_storage_then_gives_both_links(suite, monkeypatch):
+def test_the_links_come_in_the_preview_not_before_a_tool_call(suite, monkeypatch):
+    # Claude Desktop folds text written before a tool call into a summary, so links shown with
+    # check_storage (right before plan_analysis) never reached the person. They live in the preview.
     from codespringhub import portal_launch
     from test_server import call
     hub_link = {"link": "http://localhost:41000/#ticket=a", "port": 41000, "host": "bamdev1.cshl.edu",
@@ -356,21 +358,36 @@ def test_check_storage_for_a_project_says_the_storage_then_gives_both_links(suit
     monkeypatch.setattr(portal_launch, "open_portal", lambda u: hub_link)
     monkeypatch.setattr(runs, "open_app", lambda u: app_link)
     out = call("check_storage", dataset_id="ds:lab-a/reads", fastq_folder="fastq")
-    say = out["say"]
-    assert say.startswith("Your raw data is") and "so there's enough space." in say
-    # One tunnel command for both ports, before the links; then both links.
-    assert say.count("ssh -N") == 1 and "-L 41000:localhost:41000 -L 21000:localhost:21000" in say
-    assert say.index("ssh -N") < say.index("[Open CodeSpringHub](http://localhost:41000/#ticket=a)")
-    assert "[Open CodeSpringApp](http://localhost:21000/?ticket=b)" in say and "plan_analysis" in out["next"]
-    assert _no_symbols(say)
+    assert out["say"].startswith("Your raw data is") and "so there's enough space." in out["say"]
+    assert "Open" not in out["say"] and "plan_analysis" in out["next"] and "without writing" in out["next"]
+
+    p = call("plan_analysis", dataset_id="ds:lab-a/reads", project_name="exp1", species="mouse",
+             fastq_folder="fastq", compare={"column": "group", "reference": "x", "comparison": "y"})
+    preview = p["preview"]
+    # One tunnel command for both ports, before the links; both links; BSR's contacts still last.
+    assert preview.count("ssh -N") == 1 and "-L 41000:localhost:41000 -L 21000:localhost:21000" in preview
+    assert preview.index("**Steps**") < preview.index("**Your links**") < preview.index("ssh -N")
+    assert preview.index("ssh -N") < preview.index("[Open CodeSpringHub](http://localhost:41000/#ticket=a)")
+    assert "[Open CodeSpringApp](http://localhost:21000/?ticket=b)" in preview
+    assert preview.rstrip().endswith("Rad Utama (utama@cshl.edu).") and "links" in p["next"]
+    assert _no_symbols(preview)
 
     # Forwarded ports need no tunnel; an app that can't start leaves just the Hub link.
     monkeypatch.setattr(portal_launch, "open_portal", lambda u: {**hub_link, "needs_tunnel": False})
     def broken(u):
         raise HubError("CodeSpringApp isn't installed for the Hub yet.")
     monkeypatch.setattr(runs, "open_app", broken)
-    say = call("check_storage", dataset_id="ds:lab-a/reads", fastq_folder="fastq")["say"]
-    assert "ssh" not in say and "Open CodeSpringHub" in say and "Open CodeSpringApp" not in say
+    preview = call("plan_analysis", dataset_id="ds:lab-a/reads", project_name="exp2", species="mouse",
+                   fastq_folder="fastq")["preview"]
+    assert "ssh" not in preview and "Open CodeSpringHub" in preview and "Open CodeSpringApp" not in preview
+
+
+def test_short_storage_stops_before_planning(suite, monkeypatch):
+    from codespringhub import storage
+    from test_server import call
+    monkeypatch.setattr(storage, "free_space", lambda where: {"free_bytes": 10, "free": "10 B"})
+    out = call("check_storage", dataset_id="ds:lab-a/reads", fastq_folder="fastq")
+    assert "Don't call plan_analysis" in out["next"]
 
 
 def test_storage_that_is_short_leads_with_the_warning():
