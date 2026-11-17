@@ -53,8 +53,11 @@ export default function DocumentEditor({ ctx, labId, relPath, suggestion }: {
 
   const backHref = relPath === "context.md" ? `#/lab/${labId}/about` : `#/lab/${labId}/documents`;
   const personalMatch = relPath.match(/^members\/([^/]+)\/(.+)\.md$/);
+  const privateMatch = relPath.match(/^private\/([^/]+)\/(.+)\.md$/);
   const docId = personalMatch
     ? `doc:${labId}/~${personalMatch[1]}/${personalMatch[2]}`
+    : privateMatch
+    ? `doc:${labId}/~${privateMatch[1]}/private/${privateMatch[2]}`
     : `doc:${labId}/${relPath.replace(/\.md$/, "")}`;
 
   if (error) return <div className="page"><a href={backHref}>← Back</a><div className="error-box">{error}</div></div>;
@@ -69,6 +72,7 @@ export default function DocumentEditor({ ctx, labId, relPath, suggestion }: {
           <p className="muted">
             Claude refers to this as <code>{docId}</code>
             {personalMatch && <> · <span className="badge warn">Personal</span> only {personalMatch[1] === ctx.me.user ? "you" : personalMatch[1]} and the lab's PI can see it</>}
+            {privateMatch && <> · <span className="badge warn">Only you</span> nobody else can see it, not even your PI</>}
           </p>
         </div>
       </div>

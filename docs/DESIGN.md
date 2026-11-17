@@ -387,7 +387,7 @@ and a git failure is logged (`portal:history_not_recorded`) instead of blocking 
 | Portal access | SSH tunnel + private link | `https://codespringhub.cshl.edu` (or similar), SSO login, no tunnel |
 | MCP endpoint | stdio | mounted on the same app at `/mcp` |
 | Group lookup | `getgrouplist` | same, via the host's LDAP/NSS |
-| File permission check | `os.access` as the user | **open decision:** (a) a small helper run as the user through a narrowly scoped `sudo` rule, which is strongest; or (b) the service account's read access plus an explicit POSIX ACL check for the user, which is simpler but weaker |
+| File permission check | `os.access` as the user | **open decision:** (a) a small helper run as the user through a narrowly scoped `sudo` rule, which is strongest; or (b) the service account's read access plus an explicit ACL check for the user (NFSv4 on /grid), which is simpler but weaker |
 | Database | SQLite | PostgreSQL (+ pgvector for meaning-based search) |
 | Network | none | HTTPS behind a CSHL reverse proxy, only Anthropic's published IP ranges allowed |
 | Enterprise setup | – | org Owner adds a custom connector pointing to the Hub URL |
@@ -422,15 +422,19 @@ setup, plus SSH-key steps for Mac and Windows (Claude can't type a password).
 
 ### 12.1 Who sees what
 
-| | Lab-shared items | Personal items | Usage logs |
-|---|---|---|---|
-| Lab member | read and edit | only their own | their own |
-| Lab PI (`knowledge/roles.yaml`) | read and edit | their own **and their members'** (read) | their own |
-| BSR staff (`bioinformatics`) | read and edit **every** lab's (support role) | **no** (not authorised) | **everyone's**, with personal details withheld |
-| Other labs | nothing | nothing | nothing |
+| | Lab-shared items | Personal items (me + PI) | Private items (only me) | Usage logs |
+|---|---|---|---|---|
+| Lab member | read and edit | only their own | only their own | their own |
+| Lab PI (`knowledge/roles.yaml`) | read and edit | their own **and their members'** (read) | only their own | their own |
+| BSR staff (`bioinformatics`) | read and edit **every** lab's (support role) | **no** (not authorised) | **no** | **everyone's**, with personal and private details withheld |
+| Other labs | nothing | nothing | nothing | nothing |
 
 - **Personal items** (datasets, code, documents) live in `knowledge/<lab>/members/<user>/` and have
   Hub IDs containing `/~<user>/`. The structure is ready for richer PI and lab-member account types later.
+- **Private items** (added 17 Nov 2026) are for things a member wants to keep even from their PI. They
+  live in `knowledge/<lab>/private/<user>/`, a separate folder with its own git history (a PI who can
+  read `members/<user>/.git` can't reach them), and have Hub IDs containing `/~<user>/private/`. The
+  portal offers three choices wherever something is created: the whole lab, me and my PI, only me.
 - **PIs come only from `knowledge/roles.yaml`**, which only BSR can write (`hub set-pis`). A lab member
   editing their own `lab.yaml` cannot make themselves PI.
 - **Code resources** (`kind: code`): Claude can read source files in full (`read_code_file`, size-capped),
@@ -438,14 +442,27 @@ setup, plus SSH-key steps for Mac and Windows (Claude can't type a password).
 - **Consent:** connecting means usage is shared with BSR. The Connect page, the `whoami`/`list_labs`
   replies and Claude's instructions all say so; the first time it's shown is recorded per person.
 
-### 12.2 How the filesystem enforces it (POSIX ACLs on GPFS)
+### 12.2 How the filesystem enforces it (NFSv4 ACLs on GPFS)
+
+`/grid` is GPFS with **NFSv4 ACL semantics** (`mmlsfs grid -k` → `nfs4`), so `setfacl` fails there with
+"Operation not supported". The Hub sets ACLs with GPFS's own `mmputacl`/`mmgetacl`, which any file owner
+may run (`acl.py`); on other filesystems (and in most tests) it uses POSIX ACLs. Found and fixed 17 Nov
+2026; before that only BSR's own folder existed, so nothing had gone wrong.
+
+**GPFS catch:** a `chmod` *replaces* an NFSv4 ACL with one built from the mode bits. This always fails
+closed (extra access disappears; nothing is opened up) and `hub check` reports it. The Hub's own code
+therefore never chmods inside a folder that passes on an ACL (`acl.inherits`), and git runs there
+without `core.sharedRepository` (whose chmod would do the same). Researchers should not chmod inside
+`knowledge/`; if one does, the owner re-saving in the portal re-applies their own folder's ACL.
 
 | Path | Access |
 |---|---|
 | `knowledge/` | BSR rwx; each pilot lab group r-x (list labs, read `workflows.yaml`, `roles.yaml`) |
 | `knowledge/<lab>/` | BSR (owning group) + lab group rwx, inherited by everything created inside |
 | `knowledge/<lab>/.git` | the lab's own history; inherits the lab folder's access; never pushed |
-| `knowledge/<lab>/members/<user>/` | `2700` with inherited ACLs **removed**; plus `u:<pi>:rwx` per PI. Its own `.git` inside. Re-secured on every personal save, so PI changes take effect on the owner's next save |
+| `knowledge/<lab>/members/`, `private/` | lab group and BSR may **add** a folder (no delete or rename: sticky, and no delete right), nothing inherited inside |
+| `knowledge/<lab>/members/<user>/` | owner + `user:<pi>:rwx` per PI, inherited; the lab's and BSR's access **removed**. Its own `.git` inside. Re-secured on every personal save, so PI changes take effect on the owner's next save |
+| `knowledge/<lab>/private/<user>/` | owner only, inherited; no PI, no lab, no BSR. Its own `.git` inside |
 | `var/` | BSR; pilot lab groups `--x` only |
 | `var/events/` | `3770` (setgid + **sticky**); pilot lab groups `-wx`, so each person can create their log but can't list, read, delete or rename anyone else's. No default ACLs |
 | `var/events/<user>.db` | `640`, no ACLs. Readers trust a row only if the file's owner *is* that user (a forged `ann.db` is ignored) |
@@ -453,9 +470,9 @@ setup, plus SSH-key steps for Mac and Windows (Claude can't type a password).
 **Why per-lab git repositories:** git stores full copies of every file. One shared repository would let
 anyone who can read `.git` read every lab's files, including personal ones. It would also push lab
 knowledge to GitHub. The main repository's `.gitignore` now keeps all labs except BSR out
-(`knowledge/*/`, `!knowledge/bsr/`, `members/`, `_suggestions/`, `roles.yaml`).
+(`knowledge/*/`, `!knowledge/bsr/`, `members/`, `private/`, `_suggestions/`, `roles.yaml`).
 
-**Why logs are withheld at write time:** BSR can read the log files directly, so personal details are
+**Why logs are withheld at write time:** BSR can read the log files directly, so personal and private details are
 replaced with `{"details": "withheld: personal resource"}` *before* they're written, not just hidden in
 the portal. Lab-shared usage keeps full details (search words, dataset IDs) for the pilot evaluation.
 

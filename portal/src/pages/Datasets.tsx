@@ -33,7 +33,7 @@ export default function Datasets({ ctx, lab, openAdd, onChanged }: {
   }
 
   const shared = rows?.filter((d) => d.scope === "lab") ?? [];
-  const personal = rows?.filter((d) => d.scope === "personal") ?? [];
+  const personal = rows?.filter((d) => d.scope !== "lab") ?? [];
 
   return (
     <div className="stack">
@@ -56,9 +56,9 @@ export default function Datasets({ ctx, lab, openAdd, onChanged }: {
 
           {(isMember || personal.length > 0) && (
             <>
-              <h3>{lab.role === "pi" ? "Personal (yours, and your members' as PI)" : "Personal: only you and your PI"}</h3>
+              <h3>{lab.role === "pi" ? "Personal (yours, and your members' as PI)" : "Personal: you and your PI, or only you"}</h3>
               {personal.length === 0
-                ? <Empty title="No personal items.">Use these for work in progress you don't want to share with the whole lab yet. BSR can't see them.</Empty>
+                ? <Empty title="No personal items.">Use these for work in progress you don't want to share with the whole lab yet. BSR can't see them. Choose "Only me" to keep one from your PI too.</Empty>
                 : <Table rows={personal} lab={lab} onPeek={setPeek} onEdit={setEditing} onRemove={setRemoving} />}
             </>
           )}
@@ -208,7 +208,7 @@ function DatasetWizard({ ctx, lab, existing, onClose, onSaved }: {
           {!existing && (
             <>
               <div className="label">Who can see it?</div>
-              <div className="choices two">
+              <div className="choices three">
                 <label className={`choice ${scope === "lab" ? "on" : ""} ${canShare ? "" : "disabled"}`}>
                   <input type="radio" disabled={!canShare} checked={scope === "lab"} onChange={() => setScope("lab")} />
                   <strong>The whole lab</strong>
@@ -216,8 +216,13 @@ function DatasetWizard({ ctx, lab, existing, onClose, onSaved }: {
                 </label>
                 <label className={`choice ${scope === "personal" ? "on" : ""} ${canPersonal ? "" : "disabled"}`}>
                   <input type="radio" disabled={!canPersonal} checked={scope === "personal"} onChange={() => setScope("personal")} />
-                  <strong>Just me (and my PI)</strong>
-                  <span className="muted">Private work in progress. Other members and BSR can't see it.</span>
+                  <strong>Me and my PI</strong>
+                  <span className="muted">Work in progress. Other members and BSR can't see it.</span>
+                </label>
+                <label className={`choice ${scope === "private" ? "on" : ""} ${canPersonal ? "" : "disabled"}`}>
+                  <input type="radio" disabled={!canPersonal} checked={scope === "private"} onChange={() => setScope("private")} />
+                  <strong>Only me</strong>
+                  <span className="muted">Not your PI, not BSR, not other members.</span>
                 </label>
               </div>
             </>
@@ -355,6 +360,7 @@ function WhatClaudeSees({ dataset, onClose }: { dataset: Dataset; onClose: () =>
       <Help>
         Claude knows this as <code>{dataset.id}</code> and never sees the folder path.
         {dataset.scope === "personal" && " It's personal: only its owner and the lab's PI can use it."}
+        {dataset.scope === "private" && " It's private: only its owner can use it."}
       </Help>
       <DescribePreview datasetId={dataset.id} kind={dataset.kind} />
     </Modal>

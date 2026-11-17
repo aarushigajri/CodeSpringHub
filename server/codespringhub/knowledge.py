@@ -14,9 +14,11 @@ Layout (everything here is plain text, edited by people):
         members/<user>/           PERSONAL: that member + the lab's PIs only (never BSR)
           datasets.yaml
           <category>/<doc>.md
+        private/<user>/           PRIVATE: that member only (not the PI, not BSR); same layout
 
 Hub IDs: lab-shared   ds:<lab>/<id>           doc:<lab>/<category>/<name>
          personal     ds:<lab>/~<user>/<id>   doc:<lab>/~<user>/<category>/<name>
+         private      ds:<lab>/~<user>/private/<id>   doc:<lab>/~<user>/private/<category>/<name>
 
 Files whose name starts with "_" or "." are ignored. Folders the current user can't read are
 skipped silently: the filesystem is the first permission check, permissions.py the second.
@@ -33,6 +35,7 @@ import yaml
 from . import config
 
 PERSONAL_MARK = "~"
+PRIVATE_PART = "private"
 
 
 @dataclass
@@ -55,7 +58,8 @@ class Dataset:
     kind: str = "data"  # "data" (summaries only) or "code" (source files readable)
     registered_by: str = ""
     registered_on: str = ""
-    owner: str | None = None  # set for personal resources
+    owner: str | None = None  # set for personal and private resources
+    private: bool = False  # owner only (not their PI)
 
     @property
     def short_id(self) -> str:
@@ -69,8 +73,9 @@ class Document:
     category: str  # "context" for context.md, otherwise the subfolder name
     title: str
     path: Path
-    rel_path: str  # inside the lab folder, e.g. "guidance/x.md" or "members/ann/notes/x.md"
+    rel_path: str  # inside the lab folder, e.g. "guidance/x.md", "members/ann/notes/x.md", "private/ann/notes/x.md"
     owner: str | None = None
+    private: bool = False
 
 
 @dataclass
@@ -120,33 +125,49 @@ def personal_dir(lab: Lab, user: str) -> Path:
     return lab.dir / "members" / user
 
 
-def member_dirs(lab: Lab) -> list[tuple[str, Path]]:
-    root = lab.dir / "members"
+def private_dir(lab: Lab, user: str) -> Path:
+    return lab.dir / "private" / user
+
+
+def private_dirs(lab: Lab) -> list[tuple[str, Path]]:
+    """Private folders; the filesystem only lets each person into their own."""
+    return member_dirs(lab, "private")
+
+
+def member_dirs(lab: Lab, area: str = "members") -> list[tuple[str, Path]]:
+    root = lab.dir / area
     try:
         return [(d.name, d) for d in sorted(root.iterdir()) if d.is_dir() and not d.name.startswith((".", "_"))]
     except (FileNotFoundError, PermissionError):
         return []
 
 
-def _datasets_in(path: Path, lab: Lab, owner: str | None) -> dict[str, Dataset]:
+def _prefix(lab: Lab, owner: str | None, private: bool) -> str:
+    if not owner:
+        return lab.id
+    return f"{lab.id}/{PERSONAL_MARK}{owner}" + (f"/{PRIVATE_PART}" if private else "")
+
+
+def _datasets_in(path: Path, lab: Lab, owner: str | None, private: bool = False) -> dict[str, Dataset]:
     out = {}
     for entry in _read_yaml(path).get("datasets", []) if path.exists() else []:
         entry = dict(entry)
-        prefix = f"{lab.id}/{PERSONAL_MARK}{owner}" if owner else lab.id
-        ds_id = f"ds:{prefix}/{entry.pop('id')}"
+        ds_id = f"ds:{_prefix(lab, owner, private)}/{entry.pop('id')}"
         entry.pop("owner", None)
-        out[ds_id] = Dataset(id=ds_id, lab_id=lab.id, owner=owner, **entry)
+        entry.pop("private", None)
+        out[ds_id] = Dataset(id=ds_id, lab_id=lab.id, owner=owner, private=private, **entry)
     return out
 
 
 def load_datasets(lab: Lab) -> dict[str, Dataset]:
     """Lab-shared datasets plus every personal folder this process can read."""
     datasets = _datasets_in(lab.dir / "datasets.yaml", lab, None)
-    for user, d in member_dirs(lab):
-        try:
-            datasets |= _datasets_in(d / "datasets.yaml", lab, user)
-        except PermissionError:
-            continue
+    for private, dirs in ((False, member_dirs(lab)), (True, private_dirs(lab))):
+        for user, d in dirs:
+            try:
+                datasets |= _datasets_in(d / "datasets.yaml", lab, user, private)
+            except PermissionError:
+                continue
     return datasets
 
 
@@ -158,7 +179,7 @@ def _title_of(md_path: Path) -> str:
     return md_path.stem.replace("-", " ")
 
 
-def _docs_under(root: Path, lab: Lab, owner: str | None) -> dict[str, Document]:
+def _docs_under(root: Path, lab: Lab, owner: str | None, private: bool = False) -> dict[str, Document]:
     docs = {}
     try:
         files = sorted(root.rglob("*.md"))
@@ -168,8 +189,8 @@ def _docs_under(root: Path, lab: Lab, owner: str | None) -> dict[str, Document]:
         rel = md.relative_to(root)
         if any(part.startswith(("_", ".")) for part in rel.parts):
             continue
-        if owner is None and rel.parts[0] == "members":
-            continue  # personal folders are read separately
+        if owner is None and rel.parts[0] in ("members", "private"):
+            continue  # personal and private folders are read separately
         try:
             title = _title_of(md)
         except PermissionError:
@@ -179,9 +200,9 @@ def _docs_under(root: Path, lab: Lab, owner: str | None) -> dict[str, Document]:
             doc_id = f"doc:{lab.id}/{rel.with_suffix('').as_posix()}"
         else:
             category = rel.parts[0] if len(rel.parts) > 1 else "notes"
-            doc_id = f"doc:{lab.id}/{PERSONAL_MARK}{owner}/{rel.with_suffix('').as_posix()}"
+            doc_id = f"doc:{_prefix(lab, owner, private)}/{rel.with_suffix('').as_posix()}"
         docs[doc_id] = Document(id=doc_id, lab_id=lab.id, category=category, title=title, path=md,
-                                rel_path=md.relative_to(lab.dir).as_posix(), owner=owner)
+                                rel_path=md.relative_to(lab.dir).as_posix(), owner=owner, private=private)
     return docs
 
 
@@ -189,6 +210,8 @@ def load_documents(lab: Lab) -> dict[str, Document]:
     docs = _docs_under(lab.dir, lab, None)
     for user, d in member_dirs(lab):
         docs |= _docs_under(d, lab, user)
+    for user, d in private_dirs(lab):
+        docs |= _docs_under(d, lab, user, private=True)
     return docs
 
 
@@ -203,5 +226,17 @@ def owner_of(hub_id: str) -> str | None:
     return parts[1][1:] if len(parts) > 2 and parts[1].startswith(PERSONAL_MARK) else None
 
 
+def scope_of(item) -> str:
+    """'lab', 'personal' (owner + PI) or 'private' (owner only) for a Dataset or Document."""
+    return "private" if item.private else "personal" if item.owner else "lab"
+
+
+def is_private_id(hub_id: str) -> bool:
+    """'ds:lab/~ann/private/x' -> True. Categories and dataset IDs can't be named 'private' at that spot."""
+    parts = hub_id.split(":", 1)[-1].split("/")
+    return owner_of(hub_id) is not None and len(parts) > 3 and parts[2] == PRIVATE_PART
+
+
 def is_personal_id(text: str) -> bool:
+    """True for personal AND private IDs (both carry '/~user')."""
     return f"/{PERSONAL_MARK}" in text

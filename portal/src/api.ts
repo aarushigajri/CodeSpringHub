@@ -98,7 +98,7 @@ export type Me = {
   assays: string[];
 };
 export type Project = { id: string; name: string; description: string };
-export type Scope = "lab" | "personal";
+export type Scope = "lab" | "personal" | "private";
 export type DocInfo = { id: string; title: string; category: string; rel_path: string; scope: Scope; owner: string | null };
 export type Lab = {
   lab_id: string;

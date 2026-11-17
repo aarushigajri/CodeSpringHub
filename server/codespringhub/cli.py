@@ -70,11 +70,12 @@ def cmd_add_lab(args):
         "## Terms and abbreviations we use\nTODO\n\n## Reference genomes and annotation\nTODO\n\n"
         "## How we like analyses done\nTODO\n")
     (lab_dir / "datasets.yaml").write_text(editing.YAML_HEADER + "datasets: []\n")
-    (lab_dir / "members").mkdir()
+    (lab_dir / "members").mkdir(exist_ok=True)
+    (lab_dir / "private").mkdir(exist_ok=True)
     for f in lab_dir.rglob("*"):
         os.chmod(f, 0o2770 if f.is_dir() else 0o660)
     # The lab's own history: lab members can read it, other labs can't, nothing is pushed.
-    editing.init_history(lab_dir, ["members/", "_suggestions/"])
+    editing.init_history(lab_dir, ["members/", "private/", "_suggestions/"])
     editing._commit(ME, [lab_dir / "lab.yaml", lab_dir / "context.md", lab_dir / "datasets.yaml",
                          lab_dir / ".gitignore"], f"add lab {args.lab_id}")
     acl.grant_lab(lab_dir, args.group)  # again, so .git inherits the lab's access too
@@ -154,6 +155,9 @@ def cmd_check(_):
 
     ignore = (config.HUB_HOME / ".gitignore")
     ignored = ignore.read_text() if ignore.exists() else ""
+    for needed in ("knowledge/*/members/", "knowledge/*/private/"):
+        if needed not in ignored:
+            bad(f"[git] .gitignore doesn't keep {needed} out of the main (GitHub) repository")
     for lab in knowledge.load_labs().values():
         try:
             gid = grp.getgrnam(lab.unix_group).gr_gid
@@ -174,6 +178,9 @@ def cmd_check(_):
         for owner, d in knowledge.member_dirs(lab):
             for p in acl.personal_is_private(d, lab.pis):
                 bad(f"[{lab.id}] personal: {p}")
+        for owner, d in knowledge.private_dirs(lab):
+            for p in acl.personal_is_private(d, []):
+                bad(f"[{lab.id}] private: {p}")
         project_ids = {p.id for p in lab.projects}
         for ds in knowledge._datasets_in(lab.dir / "datasets.yaml", lab, None).values():
             if not os.path.exists(ds.path):
