@@ -730,6 +730,8 @@ def _app_link(user, port, query, what) -> dict:
         "link": link,
         "needs_tunnel": not forwarded,
         "tunnel_command": tunnel,
+        "port": port,
+        "host": host,
         "how_to_open": how,
     }
 

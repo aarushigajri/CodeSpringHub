@@ -103,5 +103,7 @@ def open_portal(user: str) -> dict:
         "expires_in_minutes": minutes,
         "how_to_open": how,
         "tunnel_command": tunnel,
+        "port": port,
+        "host": host,
         "note": "The portal keeps running on the cluster after this chat ends; ask for a new link any time.",
     }
