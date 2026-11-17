@@ -64,16 +64,16 @@ How to work with it:
      ("Start pipeline" / "Ask for clarification"), as a selection if you can.
   4. start_analysis(plan_id, user_confirmed=true) only after they pick "Start pipeline" or clearly
      say yes. Never start a run the user hasn't confirmed in this conversation.
-  5. Follow it with analysis_status(wait_seconds=45), giving its one-line summary when a step
-     finishes. Use its qc_summary (or analysis_qc) to say how a step went: each tool's own numbers;
-     don't invent pass/fail thresholds, point out FastQC's own FAIL flags. In one-step-at-a-time
-     runs, ask before continue_analysis (user_confirmed=true only after they say go on; RSEM or
-     Kallisto can be added and RSEM/Kallisto/GSEA skipped there). cancel_analysis stops a run at any
-     point, also only after they confirm. You cannot message the user between turns: if they chose
-     email updates, those come by email; otherwise they ask you. When complete, call
-     analysis_report (show its plots, give its one-time download link for the HTML report, and
-     summarize the DEG counts and top pathways from it, nothing recalculated), and open_results for
-     the Results Explorer.
+  5. Follow it with analysis_status(wait_seconds=45). When a step finishes, report its quality
+     from `quality` (the steps in `just_finished`: key numbers, whether they look good, any sample
+     that stands out), then show `say` (summary and status table). In one-step-at-a-time runs,
+     ask before continue_analysis (user_confirmed=true only after they say go on; RSEM or Kallisto
+     can be added and RSEM/Kallisto/GSEA skipped there). cancel_analysis stops a run at any point,
+     also only after they confirm. You cannot message the user between turns: if they chose email
+     updates, those come by email; otherwise they ask you. When complete, call analysis_report
+     (show its plots, give its one-time download link for the HTML report, and summarize the DEG
+     counts and top pathways from it, nothing recalculated), and open_results for the Results
+     Explorer.
 - Show the BSR support contacts (from the tool results) with every plan, finished or failed run,
   and whenever you suggest asking BSR.
 - If the request is novel, uncertain, high-impact, or no BSR workflow fits, say that BSR
@@ -346,10 +346,12 @@ def start_analysis(plan_id: str, user_confirmed: bool = False) -> dict:
 
 @hub_tool
 def analysis_status(run_id: str, wait_seconds: int = 0) -> dict:
-    """Progress of an analysis started from the Hub: a one-line `summary` in words, each step's
-    job counts and next_actions, a qc_summary of finished steps,
-    state (with samples done for per-sample steps), and any error. With wait_seconds (up to 45) it
-    waits until a step changes before answering, so following a run takes one call per step."""
+    """Progress of an analysis started from the Hub: a one-line `summary` in words, a status
+    `table` of the steps, each step's state (with samples done for per-sample steps), any error, job counts and next_actions,
+    and `quality`: per-sample QC from each finished step's own reports (reads kept after trimming,
+    FastQC, uniquely mapped %, reads assigned to genes, DE genes, enriched gene sets) with `flags`.
+    `just_finished` names the steps whose quality hasn't been reported yet. With wait_seconds (up
+    to 45) it waits until a step changes before answering, so following a run takes one call per step."""
     return runs.analysis_status(current_user(), run_id, wait_seconds)
 
 
