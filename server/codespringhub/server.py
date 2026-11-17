@@ -341,9 +341,9 @@ def list_workflows(assay: str | None = None) -> dict:
 def analysis_options(assay: str = "rna-seq", dataset_id: str | None = None) -> dict:
     """Call FIRST when someone wants to run a pipeline, before writing anything else. Returns BSR's
     Agent greeting (show it as your first words), what the pipeline does, and the standard questions
-    (project name, typed by the person and asked first; then pipeline, pathway gene sets, extra
-    quantification, run mode, emails) with their options and defaults. Ask the project name on its own,
-    then the rest together, as a selection if you can. Then check_storage, then plan_analysis."""
+    (pipeline; project name, typed by the person; pathway gene sets, extra quantification, run mode,
+    emails) with their options and defaults. Ask them as a selection if you can, the project name typed
+    under 'Other' right before the pathways. Then check_storage, then plan_analysis."""
     if not pipelines.can_use(current_user(), "rnaseq"):
         return {"runnable": False, "support": agent.support(),
                 "next": ("BSR runs bulk RNA-seq for this lab rather than it being started from a chat: offer "
@@ -364,7 +364,8 @@ def analysis_options(assay: str = "rna-seq", dataset_id: str | None = None) -> d
         "how_to_ask": agent.HOW_TO_ASK,
         "style": agent.STYLE,
         "next": ("Write nothing before the greeting: show it word for word as your first words, then ask the "
-                 "project_name question on its own and wait for the name they type, then the other questions. "
+                 "questions as how_to_ask says, the project_name question (typed under 'Other') right before "
+                 "the pathways. "
                  "Once they're answered, find the dataset if you don't have it (list_labs, list_datasets) and call "
                  "check_storage with it. Then plan_analysis with project_name exactly as they typed it, "
                  "pathway_genesets, extra_quantification, run_mode and email_updates from the answers (species, "
