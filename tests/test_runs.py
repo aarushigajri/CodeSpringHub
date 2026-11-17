@@ -424,11 +424,16 @@ def test_analysis_options_asks_the_standard_questions(suite):
     assert "CodeSpringHub is how I see" in opts["greeting"] and "CodeSpringApp is BSR's pipeline app" in opts["greeting"]
     assert "link to each" in opts["greeting"] and "check_storage" in opts["next"]
     q = {x["id"]: x for x in opts["questions"]}
-    assert list(q) == ["project_name", "pipeline", "pathway_genesets", "extra_quantification", "run_mode",
+    assert list(q) == ["pipeline", "project_name", "pathway_genesets", "extra_quantification", "run_mode",
                        "email_updates"]
-    # The person types the project name, asked on its own before any selection (pathways included).
-    assert q["project_name"]["type"] == "text" and q["project_name"]["options"] == []
-    assert "project_name question first" in opts["how_to_ask"] and "Never suggest, invent" in opts["how_to_ask"]
+    # The project name is a prompted question right before the pathways, typed by the person under "Other":
+    # its options only point there and carry no name to pick.
+    assert q["project_name"]["type"] == "text" and q["project_name"]["default"] is None
+    assert 2 <= len(q["project_name"]["options"]) <= 4
+    assert all(o["value"] is None for o in q["project_name"]["options"])
+    assert "Other" in q["project_name"]["question"]
+    assert "Never suggest, invent" in opts["how_to_ask"] and "at most 4 questions per call" in opts["how_to_ask"]
+    assert "right before the pathways" in opts["next"]
     assert "project_name exactly as they typed it" in opts["next"]
     assert q["email_updates"]["default"] is False and "own CSHL address" in json.dumps(q["email_updates"])
     assert q["pathway_genesets"]["multi_select"] and not q["extra_quantification"]["multi_select"]

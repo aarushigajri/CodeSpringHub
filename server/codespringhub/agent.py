@@ -94,30 +94,40 @@ RNASEQ_SUMMARY = (
 )
 
 HOW_TO_ASK = (
-    "Show the greeting, then ask the project_name question first, on its own and in plain words (not a "
-    "selection tool), and wait for the name the person types. Never suggest, invent or change a project name "
-    "yourself, including when one is taken: ask them for another. Once they've named it, ask the remaining "
-    "questions together as a selection if you have a multiple-choice question tool (in Claude Code, "
-    "AskUserQuestion with every remaining question in one call; use multiSelect where multi_select is true and "
-    "put each option's description in the option). Otherwise ask them as one short numbered list with the "
-    "default marked. Don't add questions of your own; the reference genome and comparison come from the dataset "
-    "and appear in the preview, where the person can ask to change them."
+    "Show the greeting, then ask the questions in the order given, as a selection if you have a multiple-choice "
+    "question tool (in Claude Code, AskUserQuestion: at most 4 questions per call, so ask pipeline, "
+    "project_name, pathway_genesets and extra_quantification in one call, then run_mode and email_updates in a "
+    "second; use multiSelect where multi_select is true and put each option's description in the option). "
+    "project_name is a typed answer: its options only point the person to the free-text 'Other' field, and "
+    "the name is whatever they type there. If they pick an option instead of typing a name, ask for the name "
+    "in plain words and wait for it. Without a selection tool, ask the project name on its own in plain words "
+    "first, then the rest as one short numbered list with the defaults marked. Never suggest, invent or change "
+    "a project name yourself, including when one is taken: ask them for another. Don't add questions of your "
+    "own; the reference genome and comparison come from the dataset and appear in the preview, where the "
+    "person can ask to change them."
 )
 
 PROJECT_NAME_RULE = (
     "Every CodeSpringHub pipeline run needs a project name the person types in themselves (it names the results "
-    "folder and the project in CodeSpringApp): ask for it before any other choice such as pathway gene sets, and "
-    "never make one up."
+    "folder and the project in CodeSpringApp): ask for it as its own question, before the pathway gene sets, "
+    "and never make one up."
 )
 
 
 def project_name_question(pipeline_words: str = "this analysis") -> dict:
-    """The typed question every Hub pipeline asks first: the project name, in the person's own words."""
+    """The typed question every Hub pipeline asks: the project name, in the person's own words. Its options
+    exist only so a selection tool can show it; the answer is what the person types under 'Other'."""
     return {"id": "project_name", "header": "Project", "type": "text", "multi_select": False,
-            "question": (f"What would you like to call {pipeline_words}? Type a project name: letters, numbers, "
-                         "'.', '_' or '-', up to 64 characters, starting with a letter or number."),
-            "options": [], "default": None,
-            "note": ("Ask in plain words and wait for their typed answer; pass it unchanged as project_name. "
+            "question": (f"What would you like to call {pipeline_words}? Choose 'Other' and type a project name: "
+                         "letters, numbers, '.', '_' or '-', up to 64 characters, starting with a letter or number."),
+            "options": [
+                {"label": "Type it under Other", "value": None,
+                 "description": "Choose Other below and type your project name. It's used exactly as you type it."},
+                {"label": "Ask me in chat", "value": None,
+                 "description": "I'll ask for the name in a separate message and wait for you to type it."}],
+            "default": None,
+            "note": ("The answer is the text typed under 'Other', passed unchanged as project_name. If they pick "
+                     "an option instead, or the typed text is empty, ask for the name in plain words and wait. "
                      "If it's taken or not allowed, plan_analysis says so: ask them for another.")}
 
 
@@ -185,7 +195,6 @@ def rnaseq_questions(genesets: list[str] | None = None) -> list[dict]:
     available = list(genesets or FEATURED_GENESETS)
     featured = [g for g in FEATURED_GENESETS if g in available] or available[:4]
     return [
-        project_name_question("this RNA-seq project"),
         {"id": "pipeline", "header": "Pipeline", "multi_select": False,
          "question": "Which pipeline would you like to use?",
          "options": [
@@ -196,6 +205,7 @@ def rnaseq_questions(genesets: list[str] | None = None) -> list[dict]:
          "default": "codespringapp",
          "if_nf_core": ("Say plainly that nf-core/rnaseq isn't BSR's standard and can't be started from here yet, "
                         "and offer request_bsr_review with their dataset and question.")},
+        project_name_question("this RNA-seq project"),
         {"id": "pathway_genesets", "header": "Pathways", "multi_select": True,
          "question": "Which pathway gene sets should the pathway analysis use? Pick as many as you like.",
          "options": [{"label": gs.replace("_", " "), "value": gs, "description": FEATURED_GENESETS.get(gs, "")}
