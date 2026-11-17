@@ -268,8 +268,12 @@ def plan_analysis(user, dataset_id, project_name, species, fastq_folder="", desi
                                         email=plan.get("notify") if email_updates else None),
         "final_prompt": agent.FINAL_PROMPT,
         "plan": plan,
-        "next": ("Show `preview` exactly as given (BSR's Agent's intro, the steps table and how to reach BSR), "
-                 "with no extra summary before or after it, then the final_prompt. "
+        "next": ("Make the preview your final message this turn: any other tool calls (including a closing "
+                 "or wrap-up tool) come first, and none after it, or the app may fold the preview into a "
+                 "short summary. Your message is `preview` exactly as given, word for word (greeting, the "
+                 "person's answers, storage, the plan intro, the steps table and how to reach BSR), with "
+                 "nothing added before it, nothing left out and no extra summary, then final_prompt's "
+                 "question in plain words (no selection tool). "
                  + ("Space is short: before the preview, say so in one sentence and suggest freeing space or "
                     "asking BSR. " if not verdict.startswith("enough") else "")
                  + "Only after they pick 'Start pipeline' (or clearly say yes), call start_analysis with this "

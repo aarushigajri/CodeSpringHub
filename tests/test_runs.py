@@ -357,7 +357,11 @@ def test_analysis_options_asks_the_standard_questions(suite):
 def test_preview_is_friendly_with_steps_output_path_and_bsr_support(suite):
     p = plan()
     preview = p["preview"]
-    assert preview.startswith("I'm BSR's Agent, and your RNA-seq plan is ready! We'll compare y vs x for 2 mouse samples")
+    assert preview.startswith("Hello! This is BSR's Agent. I'm here to help you set up and run the Bioinformatics "
+                              "Shared Resource's RNA-seq pipeline on your data.\n\n**Your answers:** CodeSpringApp "
+                              "pipeline, ")
+    assert "\n\n**Storage:** Results go to `" in preview and "% used)." in preview
+    assert "\n\nI'm BSR's Agent, and your RNA-seq plan is ready! We'll compare y vs x for 2 mouse samples" in preview
     assert "running all at once on the cluster" in preview and "`/r/exp1`" in preview
     assert "Here are the steps I'll run:" in preview and "| | Step | Tool | What it does |" in preview
     for step in p["plan"]["steps"]:
@@ -366,6 +370,8 @@ def test_preview_is_friendly_with_steps_output_path_and_bsr_support(suite):
     assert preview.endswith("reach out to us: Aarushi Gajri (gajri@cshl.edu), James Rouse (rouse@cshl.edu), "
                             "or Rad Utama (utama@cshl.edu).")
     assert [o["label"] for o in p["final_prompt"]["options"]] == ["Start pipeline", "Ask for clarification"]
+    # The preview must be the turn's last message: a tool call after it lets Claude Desktop fold it away.
+    assert "no tool call after" in p["final_prompt"]["how"] and "final message" in p["next"]
     assert _no_symbols(preview) and _no_symbols(p["next"])
 
 
