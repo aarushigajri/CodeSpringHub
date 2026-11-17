@@ -3,7 +3,7 @@ import { Ctx } from "../App";
 import { ApiError, get } from "../api";
 import { Help, notify } from "../components";
 
-type Info = { user: string; host: string; command: string; claude_desktop: object; notice: string; portal_port: number; codespringapp_port: number; portal_command: string; setup_mac: string; setup_windows: string };
+type Info = { user: string; host: string; command: string; claude_desktop: object; notice: string; portal_port: number; codespringapp_port: number; portal_command: string; setup_mac: string; setup_windows: string; preference: string };
 
 function Copy({ text, label = "Copy" }: { text: string; label?: string }) {
   return (
@@ -152,6 +152,22 @@ export default function Connect({ ctx }: { ctx: Ctx }) {
             <code>{os === "mac" ? "~/Library/Logs/Claude/mcp-server-BSR Agent.log" : "%APPDATA%\\Claude\\logs\\mcp-server-BSR Agent.log"}</code>
             , or ask BSR. You can also preview exactly what
             Claude receives on the <a href="#/try">Try it as Claude</a> page.
+          </p>
+        </li>
+
+        <li>
+          <h3>Make Claude turn to BSR's Agent first</h3>
+          <p>
+            Claude only uses a connector when it decides it needs one, so a general question ("can you help with
+            sequencing analysis?") may get a plain answer. One line in your Claude preferences fixes that. In Claude
+            Desktop, open <strong>Settings → Profile</strong>, and paste this into <strong>What personal preferences
+            should Claude consider in responses?</strong>:
+          </p>
+          <Code text={info.preference} />
+          <p className="muted small">
+            The setup command in step 3 already added the same line for <strong>Claude Code</strong> on this computer
+            (in <code>~/.claude/CLAUDE.md</code>). Set up before this was added? Run step 3 again. You can always say it
+            directly too: "Ask BSR's Agent: …".
           </p>
         </li>
 

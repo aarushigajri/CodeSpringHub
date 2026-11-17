@@ -217,6 +217,15 @@ def test_setup_command_adds_the_hub_without_losing_other_settings(api, tmp_path)
     direct = info["claude_desktop"]["mcpServers"]["BSR Agent"]
     assert c["mcpServers"]["BSR Agent"]["args"] == [str(helper), "--", direct["command"], *direct["args"]]
     assert cfg.with_name(cfg.name + ".bak").exists()
+    # Claude Code on the laptop gets the "use BSR's Agent first" preference, once, keeping the person's own lines.
+    md = tmp_path / ".claude" / "CLAUDE.md"
+    assert info["preference"] in md.read_text()
+    md.write_text(md.read_text() + "- my own rule\n")
+    subprocess.run(["bash", "-c", info["setup_mac"]], env={"HOME": str(tmp_path), "PATH": f"{fakebin}:/usr/bin:/bin"},
+                   check=True)
+    text = md.read_text()
+    assert text.count(info["preference"]) == 1 and "- my own rule" in text
+    assert info["preference"] in info["setup_windows"] and "BSR''s" not in info["setup_windows"]
     assert "$env:APPDATA" in info["setup_windows"] and "WriteAllText" in info["setup_windows"]
 
 
