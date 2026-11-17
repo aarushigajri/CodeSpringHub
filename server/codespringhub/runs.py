@@ -741,22 +741,52 @@ def _app_link(user, port, query, what) -> dict:
 SHELLS = {"bash", "sh", "dash", "zsh", "ksh", "tcsh", "csh", "env"}
 
 
-def ports_forwarded() -> bool:
-    """True when this Hub was started straight from an SSH login (the Connect page's Claude Desktop
-    setup, which forwards the portal and CodeSpringApp ports to the laptop). When something else
-    started it, such as Claude Code on the cluster, nothing is forwarded and a link needs a tunnel."""
-    pid = os.getppid()
-    for _ in range(4):
-        try:
-            comm = Path(f"/proc/{pid}/comm").read_text().strip()
+def _parent(pid: int, proc: Path) -> int:
+    return int((proc / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()[1])
+
+
+def _started_by_ssh(pid: int, proc: Path) -> bool:
+    """True when process `pid` was started straight from an SSH login (perhaps through a shell)."""
+    try:
+        pid = _parent(pid, proc)
+        for _ in range(4):
+            comm = (proc / str(pid) / "comm").read_text().strip()
             if comm.startswith("sshd"):
                 return True
             if comm not in SHELLS:
                 return False
-            pid = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1])
-        except (OSError, ValueError, IndexError):
-            return False
+            pid = _parent(pid, proc)
+    except (OSError, ValueError, IndexError):
+        return False
     return False
+
+
+def _is_hub(pid: int, proc: Path) -> bool:
+    """A Hub MCP server (the `codespringhub` command, not the portal) run by this account."""
+    try:
+        if (proc / str(pid)).stat().st_uid != os.getuid():
+            return False
+        argv = (proc / str(pid) / "cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return False
+    return any(Path(a.decode(errors="replace")).name == "codespringhub" for a in argv[:2])
+
+
+def ports_forwarded(proc: Path = Path("/proc")) -> bool:
+    """True when the person's laptop has the portal and CodeSpringApp ports forwarded to this node.
+
+    The Connect page's Claude Desktop setup logs in over SSH with those forwards and starts the Hub
+    from that login. So they are there when this Hub was started that way, or when another Hub of
+    this account on this node was (e.g. the Desktop chat is open while this Hub serves Claude Code
+    in the Code tab or on the cluster). Otherwise nothing is forwarded and a link needs a tunnel."""
+    me = os.getpid()
+    if _started_by_ssh(me, proc):
+        return True
+    try:
+        pids = [int(p.name) for p in proc.iterdir() if p.name.isdigit() and int(p.name) != me]
+    except OSError:
+        return False
+    return any(_is_hub(pid, proc) and _started_by_ssh(pid, proc) for pid in pids)
 
 
 def _laptop_host() -> str:
