@@ -121,6 +121,15 @@ def plan(name="exp1", **kw):
     return runs.plan_analysis(USER, **args)
 
 
+def test_project_name_is_the_persons_own_and_never_replaced(suite):
+    for bad in ("", "  ", "my project", "-x", "a/b", "x" * 65):
+        with pytest.raises(HubError, match="Ask the person to type another name"):
+            plan(name=bad)
+    with pytest.raises(HubError, match="(?s)already exists.*already a project called 'taken'. Ask the person to type a different"):
+        plan(name="taken")
+    assert plan(name=" exp_2.v1 ")["plan"]["project_id"] == "rna/exp_2.v1"
+
+
 def test_planning_checks_with_codespringapp_and_submits_nothing(suite):
     p = plan()
     assert p["plan_id"].startswith("plan-") and p["plan"]["input"]["dataset"] == "ds:lab-a/reads"
@@ -415,7 +424,12 @@ def test_analysis_options_asks_the_standard_questions(suite):
     assert "CodeSpringHub is how I see" in opts["greeting"] and "CodeSpringApp is BSR's pipeline app" in opts["greeting"]
     assert "link to each" in opts["greeting"] and "check_storage" in opts["next"]
     q = {x["id"]: x for x in opts["questions"]}
-    assert list(q) == ["pipeline", "pathway_genesets", "extra_quantification", "run_mode", "email_updates"]
+    assert list(q) == ["project_name", "pipeline", "pathway_genesets", "extra_quantification", "run_mode",
+                       "email_updates"]
+    # The person types the project name, asked on its own before any selection (pathways included).
+    assert q["project_name"]["type"] == "text" and q["project_name"]["options"] == []
+    assert "project_name question first" in opts["how_to_ask"] and "Never suggest, invent" in opts["how_to_ask"]
+    assert "project_name exactly as they typed it" in opts["next"]
     assert q["email_updates"]["default"] is False and "own CSHL address" in json.dumps(q["email_updates"])
     assert q["pathway_genesets"]["multi_select"] and not q["extra_quantification"]["multi_select"]
     assert q["extra_quantification"]["options"][0]["label"] == "None, skip this"
@@ -452,6 +466,7 @@ def test_start_gives_a_live_link_and_says_when_a_tunnel_is_needed(suite, monkeyp
     started = runs.start_analysis(USER, plan()["plan_id"], user_confirmed=True)
     assert "[Open the live progress page in CodeSpringApp](http://localhost:31804/?ticket=" in started["say"]
     assert "view=progress" in started["say"] and "ssh -N -L 31804:localhost:31804" in started["say"]
+    assert "refresh the app's page" in started["say"]
     assert started["live_progress"]["needs_tunnel"] is True
     # Started over the Connect page's SSH login, on the person's own port: no tunnel step.
     from codespringhub import editing
