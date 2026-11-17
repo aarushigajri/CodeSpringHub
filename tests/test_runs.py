@@ -335,11 +335,68 @@ def test_the_plan_leads_with_storage_and_a_run_that_cannot_fit_is_refused(suite,
     assert "start" not in [c["cmd"] for c in calls(suite)]
 
 
-def test_claude_is_told_to_talk_about_storage_first():
+def test_claude_introduces_the_agent_then_asks_then_checks_storage_then_plans():
     from codespringhub import server
-    assert server.INSTRUCTIONS.index("check_storage, analysis_options") < server.INSTRUCTIONS.index("plan_analysis (")
+    rules = server.INSTRUCTIONS
+    order = ["1. analysis_options", "greeting is your first words", "3. check_storage", "4. plan_analysis",
+             "5. start_analysis"]
+    assert [rules.index(r) for r in order] == sorted(rules.index(r) for r in order)
     from test_server import call
-    assert "free" in call("check_storage")
+    out = call("check_storage")
+    assert "free" in out["say"] and "Open" not in out["say"]  # no dataset: just the space, no links
+
+
+def test_the_links_come_in_the_preview_not_before_a_tool_call(suite, monkeypatch):
+    # Claude Desktop folds text written before a tool call into a summary, so links shown with
+    # check_storage (right before plan_analysis) never reached the person. They live in the preview.
+    from codespringhub import portal_launch
+    from test_server import call
+    hub_link = {"link": "http://localhost:41000/#ticket=a", "port": 41000, "host": "bamdev1.cshl.edu",
+                "needs_tunnel": True}
+    app_link = {"link": "http://localhost:21000/?ticket=b", "port": 21000, "host": "bamdev1.cshl.edu",
+                "needs_tunnel": True}
+    monkeypatch.setattr(portal_launch, "open_portal", lambda u: hub_link)
+    monkeypatch.setattr(runs, "open_app", lambda u: app_link)
+    out = call("check_storage", dataset_id="ds:lab-a/reads", fastq_folder="fastq")
+    assert out["say"].startswith("Your raw data is") and "so there's enough space." in out["say"]
+    assert "Open" not in out["say"] and "plan_analysis" in out["next"] and "without writing" in out["next"]
+
+    p = call("plan_analysis", dataset_id="ds:lab-a/reads", project_name="exp1", species="mouse",
+             fastq_folder="fastq", compare={"column": "group", "reference": "x", "comparison": "y"})
+    preview = p["preview"]
+    # One tunnel command for both ports, before the links; both links; BSR's contacts still last.
+    assert preview.count("ssh -N") == 1 and "-L 41000:localhost:41000 -L 21000:localhost:21000" in preview
+    assert preview.index("**Steps**") < preview.index("**Your links**") < preview.index("ssh -N")
+    assert preview.index("ssh -N") < preview.index("[Open CodeSpringHub](http://localhost:41000/#ticket=a)")
+    assert "[Open CodeSpringApp](http://localhost:21000/?ticket=b)" in preview
+    assert preview.rstrip().endswith("Rad Utama (utama@cshl.edu).") and "links" in p["next"]
+    assert _no_symbols(preview)
+
+    # Forwarded ports need no tunnel; an app that can't start leaves just the Hub link.
+    monkeypatch.setattr(portal_launch, "open_portal", lambda u: {**hub_link, "needs_tunnel": False})
+    def broken(u):
+        raise HubError("CodeSpringApp isn't installed for the Hub yet.")
+    monkeypatch.setattr(runs, "open_app", broken)
+    preview = call("plan_analysis", dataset_id="ds:lab-a/reads", project_name="exp2", species="mouse",
+                   fastq_folder="fastq")["preview"]
+    assert "ssh" not in preview and "Open CodeSpringHub" in preview and "Open CodeSpringApp" not in preview
+
+
+def test_short_storage_stops_before_planning(suite, monkeypatch):
+    from codespringhub import storage
+    from test_server import call
+    monkeypatch.setattr(storage, "free_space", lambda where: {"free_bytes": 10, "free": "10 B"})
+    out = call("check_storage", dataset_id="ds:lab-a/reads", fastq_folder="fastq")
+    assert "Don't call plan_analysis" in out["next"]
+
+
+def test_storage_that_is_short_leads_with_the_warning():
+    from codespringhub import agent
+    out = {"results_location": "~/csl_results", "free": "1 GB", "verdict": "not enough space",
+           "raw_input": {"size": "2 GB", "fastq_files": 4},
+           "rnaseq_estimate": {"range": "11 GB to 18 GB", "typical": "14 GB", "recommended_free": "18 GB"}}
+    say = agent.storage_say(out)
+    assert say.startswith("Storage is not enough space.") and "at least 18 GB" in say and "ask BSR" in say
 
 
 # ---- BSR's Agent: questions, preview, progress ------------------------------------------------------
@@ -356,6 +413,7 @@ def test_analysis_options_asks_the_standard_questions(suite):
     opts = call("analysis_options")
     assert opts["greeting"].startswith("Hi, this is BSR's Agent! Let's take a look at your data. I'll help you run")
     assert "CodeSpringHub is how I see" in opts["greeting"] and "CodeSpringApp is BSR's pipeline app" in opts["greeting"]
+    assert "link to each" in opts["greeting"] and "check_storage" in opts["next"]
     q = {x["id"]: x for x in opts["questions"]}
     assert list(q) == ["pipeline", "pathway_genesets", "extra_quantification", "run_mode", "email_updates"]
     assert q["email_updates"]["default"] is False and "own CSHL address" in json.dumps(q["email_updates"])

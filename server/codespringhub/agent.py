@@ -36,7 +36,8 @@ HELLO = (f"Hi, this is {NAME}! Let's take a look at your data. I'll help you run
 ABOUT = (
     "Two pieces work together here. CodeSpringHub is how I see your lab's registered data and BSR's guidance. "
     "CodeSpringApp is BSR's pipeline app on the cluster: it runs the analysis under your own account, and you can "
-    "watch it live and browse the results there. As soon as your run starts I'll give you a link to it."
+    "watch it live and browse the results there. Once we've checked your data and storage, I'll give you a "
+    "link to each."
 )
 
 GREETING = (HELLO + "\n\n" + ABOUT + "\n\nFirst, a few quick questions. Nothing runs until you've seen the full "
@@ -50,6 +51,40 @@ def link_say(what: str, link: str, minutes: int, tunnel_command: str, needs_tunn
         return ("First run this in a terminal on your laptop (CSHL Wi-Fi or VPN) and leave it open:\n\n"
                 f"`{tunnel_command}`\n\nThen: " + text)
     return text + f"\n\nIf the page doesn't load, run `{tunnel_command}` on your laptop and ask me for a new link."
+
+
+def links_say(items: list[dict], user: str, host: str, minutes: int) -> str:
+    """Several Hub links at once (CodeSpringHub and CodeSpringApp), the same way link_say shows one: clickable
+    links, led by a single tunnel command for every port that needs one. Items are open_portal / open_app
+    results; one without a link (e.g. the person's own CodeSpringApp is open) adds its `say` instead."""
+    linked = [i for i in items if i.get("link")]
+    lines = [f"- **[Open {i['what']}]({i['link']})**" for i in linked]
+    text = "\n".join(lines)
+    if linked:
+        text += f"\n\nEach link works once, within {minutes} minutes; ask me for new ones any time."
+    ports = [i["port"] for i in linked if i.get("needs_tunnel")]
+    if ports:
+        forwards = " ".join(f"-L {p}:localhost:{p}" for p in ports)
+        text = ("First run this in a terminal on your laptop (CSHL Wi-Fi or VPN) and leave it open:\n\n"
+                f"`ssh -N {forwards} {user}@{host}`\n\nThen:\n\n" + text)
+    extra = [i["say"] for i in items if not i.get("link") and i.get("say")]
+    return "\n\n".join([t for t in [text] + extra if t])
+
+
+def storage_say(out: dict) -> str:
+    """check_storage in plain words: free space, raw data, what the pipeline will write, the verdict."""
+    where = out.get("results_location") or "your results folder"
+    est, raw = out.get("rnaseq_estimate"), out.get("raw_input")
+    if not est or not raw:
+        return f"You have {out.get('free', 'an unknown amount of')} free in {where}."
+    verdict = out.get("verdict", "")
+    text = (f"Your raw data is {raw['size']} ({raw['fastq_files']} FASTQ files). The pipeline should write between "
+            f"{est['range'].replace(' to ', ' and ')}, typically {est['typical']}, mostly STAR's BAM files. You have "
+            f"{out.get('free')} free in {where}, ")
+    if verdict == "enough space":
+        return text + "so there's enough space."
+    return (f"Storage is {verdict}. " + text + f"and BSR recommends at least {est['recommended_free']} free. "
+            "Free up some space or ask BSR before starting.")
 
 
 RNASEQ_SUMMARY = (
