@@ -23,8 +23,9 @@ STYLE = (
     "what you just said. Short paragraphs, plain numbers, one question at a time."
 )
 
-GREETING = (f"Hello! This is {NAME}. I'm here to help you set up and run the Bioinformatics Shared Resource's "
-            "RNA-seq pipeline on your data.\n\nBefore we start, I'm going to ask a few questions to clarify the "
+HELLO = (f"Hello! This is {NAME}. I'm here to help you set up and run the Bioinformatics Shared Resource's "
+         "RNA-seq pipeline on your data.")
+GREETING = (HELLO + "\n\nBefore we start, I'm going to ask a few questions to clarify the "
             "analysis. It only takes a moment, and I'll show you the full plan before anything runs.")
 
 RNASEQ_SUMMARY = (
@@ -48,9 +49,13 @@ FINAL_PROMPT = {
         {"label": "Start pipeline", "description": "Submit this plan to the cluster now."},
         {"label": "Ask for clarification", "description": "Ask a question or change something before it starts."},
     ],
-    "how": ("End with this as a single-choice selection if you can (otherwise as two plain choices). 'Start "
-            "pipeline' is the person's confirmation: then call start_analysis with user_confirmed=true. Anything "
-            "else: answer or re-plan, and ask again."),
+    "how": ("Ask this in words at the very end of the preview message, as two plain choices: \"Ready to go? Reply "
+            "'Start pipeline', or ask for clarification if you'd like to change anything.\" Do NOT use a "
+            "question/selection tool here, and make no tool call after the preview: some apps (Claude Desktop) "
+            "fold text written before a tool call into a short summary, and the person never sees the plan. "
+            "If your app needs a closing or wrap-up tool call, make it before the preview, so the preview is "
+            "your final message. 'Start pipeline' (or a clear yes) is the person's confirmation: then call "
+            "start_analysis with user_confirmed=true. Anything else: answer or re-plan, and ask again."),
 }
 
 # Shown as options; the rest of the catalog's gene sets can be typed under "Other".
@@ -169,6 +174,43 @@ def _steps_table(steps: list[dict], genesets: list[str]) -> str:
     return "\n".join(rows)
 
 
+def _answers_line(genesets: list[str], quantifiers: list[str], run_mode: str) -> str:
+    """'Your answers: CodeSpringApp pipeline, MSigDB Hallmark 2020 gene sets, no extra quantification, ...'"""
+    sets = _join_words([g.replace("_", " ") for g in genesets]) + (" gene sets" if genesets else "")
+    names = {"rsem": "RSEM", "kallisto": "Kallisto"}
+    extra = (_join_words([names.get(q, q) for q in quantifiers]) + " quantification") if quantifiers \
+        else "no extra quantification"
+    mode = "one step at a time" if run_mode == "step" else "all steps at once"
+    parts = ["CodeSpringApp pipeline"] + ([sets] if genesets else ["no pathway analysis"]) + [extra, mode]
+    return "**Your answers:** " + ", ".join(parts) + "."
+
+
+def _storage_paragraph(plan: dict) -> str:
+    """Where results go, free space, raw data size, the expected range and the verdict, in words."""
+    st = plan.get("storage") or {}
+    if not st:
+        return "**Storage:** I couldn't check storage for this run."
+    where = st.get("results_location", "")
+    if plan.get("project_name") and where.rstrip("/").endswith("/" + plan["project_name"]):
+        where = where.rstrip("/").rsplit("/", 1)[0]
+    raw, est, verdict = st.get("raw_input") or {}, st.get("rnaseq_estimate") or {}, st.get("verdict", "")
+    text = (f"**Storage:** Results go to `{where}`, which has {st.get('free', '?')} free "
+            f"({st.get('total', '?')} filesystem, {st.get('used_percent', '?')}% used).")
+    if raw:
+        text += f" The raw data is {raw.get('fastq_files', '?')} FASTQ files, {raw.get('size', '?')} in total."
+    if est:
+        text += (f" This pipeline usually writes {est.get('range', '?')}, about {est.get('typical', '?')} in a "
+                 "typical run. Most of that is STAR's BAM files.")
+    if verdict.startswith("not enough"):
+        text += (f" There isn't enough space: please free some up (at least {est.get('recommended_free', '?')}) "
+                 "or ask BSR before starting.")
+    elif verdict.startswith("tight"):
+        text += f" Space is tight, so have at least {est.get('recommended_free', '?')} free before starting."
+    else:
+        text += " There is enough space."
+    return text
+
+
 def rnaseq_preview(plan: dict, dataset_id: str, species: str, compare: dict | None, genesets: list[str],
                    quantifiers: list[str], run_mode: str) -> str:
     """BSR's Agent introduces the plan, shows the steps it will run, then who to reach for help."""
@@ -190,12 +232,13 @@ def rnaseq_preview(plan: dict, dataset_id: str, species: str, compare: dict | No
     else:
         space = f"It needs about {est.get('typical', '?')} and you have {storage.get('free', '?')} free"
         space += ", which is a little tight." if verdict.startswith("tight") else ", so you're all set."
+    head = f"{HELLO}\n\n{_answers_line(genesets, quantifiers, run_mode)}\n\n{_storage_paragraph(plan)}"
     intro = (f"I'm BSR's Agent, and your RNA-seq plan is ready! We'll compare {what}, running {mode} "
              f"on the cluster under your account. {space} Your results will go to "
              f"`{plan.get('results_dir', '')}`.")
     help_line = ("If you need any help, reach out to us: "
                  + _join_words([f"{c['name']} ({c['email']})" for c in support()["contacts"]], "or") + ".")
-    return f"{intro}\n\nHere are the steps I'll run:\n\n{_steps_table(plan.get('steps') or [], genesets)}\n\n{help_line}"
+    return f"{head}\n\n{intro}\n\nHere are the steps I'll run:\n\n{_steps_table(plan.get('steps') or [], genesets)}\n\n{help_line}"
 
 
 # ---- while it runs --------------------------------------------------------------------------------

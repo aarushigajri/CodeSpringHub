@@ -60,8 +60,11 @@ How to work with it:
      appears in the plan preview.
   2. analysis_options: show its greeting, then ask its questions together, as a selection if you
      have a multiple-choice question tool, otherwise as one short numbered list.
-  3. plan_analysis with their answers. Show its `preview` as given, then its final_prompt
-     ("Start pipeline" / "Ask for clarification"), as a selection if you can.
+  3. plan_analysis with their answers. Show its `preview` word for word (it already holds the
+     greeting, their answers, storage, the steps table and BSR's contacts) as your final message of the
+     turn, ending with its final_prompt ("Start pipeline" / "Ask for clarification") in plain words.
+     Do not use a selection tool or any other tool call after the preview: some apps (Claude
+     Desktop) fold text written before a tool call into a short summary, hiding the plan.
   4. start_analysis(plan_id, user_confirmed=true) only after they pick "Start pipeline" or clearly
      say yes. Never start a run the user hasn't confirmed in this conversation.
   5. Follow it with analysis_status(wait_seconds=45). When a step finishes, report its quality
@@ -319,7 +322,8 @@ def plan_analysis(dataset_id: str, project_name: str, species: str, design: list
     dataset); species human or mouse; compare = {"column", "reference", "comparison"} for DESeq2.
     From the analysis_options answers: pathway_genesets (one or more, up to 6), extra_quantification
     ([], ["rsem"], ["kallisto"] or both) and run_mode ("all" or "step"). Returns `preview` (show it
-    as given) and final_prompt (Start pipeline / Ask for clarification)."""
+    as given, as your final message, with no tool call after it) and final_prompt (Start pipeline /
+    Ask for clarification, asked in plain words, not with a selection tool)."""
     return runs.plan_analysis(current_user(), dataset_id, project_name, species, fastq_folder=fastq_folder,
                               design=design, design_file=design_file, paired_end=paired_end,
                               genome_version=genome_version, trim_adapters=trim_adapters, adapter=adapter,
