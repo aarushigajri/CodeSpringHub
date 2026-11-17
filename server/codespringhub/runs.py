@@ -24,6 +24,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import socket
 import subprocess
 import time
@@ -651,24 +652,73 @@ def _alive(pid: int) -> bool:
         return False
 
 
-def _running_app() -> tuple[int, bool] | None:
-    """This person's running CodeSpringApp on this login node, if any: (port, is the shared install)."""
+def _running_app(restart_if_stale: bool = True) -> tuple[int, bool] | None:
+    """This person's running CodeSpringApp on this login node, if any: (port, is the shared install).
+
+    Like the portal: a shared CodeSpringApp started before its code last changed is still serving
+    the old code (R loads app.R once), so it may not understand the Hub's newer links. Such an app
+    is stopped and None returned, so the caller starts a fresh one."""
     for url_file in sorted(_app_home().glob("codespringweb_*.url"), key=lambda p: p.stat().st_mtime, reverse=True):
         port = url_file.stem.split("_")[-1]
         pid_file = url_file.with_suffix(".pid")
         try:
             pid = int(pid_file.read_text().strip())
+            started = pid_file.stat().st_mtime  # the launcher writes it as the app starts
         except (OSError, ValueError):
             continue
         if port.isdigit() and _alive(pid):
             with socket.socket() as s:
                 if s.connect_ex(("127.0.0.1", int(port))) == 0:
-                    try:
-                        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode()
-                    except OSError:
-                        cmdline = ""
-                    return int(port), str(config.CODESPRING_SUITE) in cmdline
+                    cmdline = _cmdline(pid)
+                    shared = str(config.CODESPRING_SUITE) in cmdline
+                    if restart_if_stale and shared and _app_code_changed_since(started) and _stop_app(pid):
+                        return None
+                    return int(port), shared
     return None
+
+
+def _cmdline(pid: int) -> str:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+    except OSError:
+        return ""
+
+
+def _app_code_changed_since(when: float) -> bool:
+    """True when the shared CodeSpringApp's app.R or R/ sources changed after `when`."""
+    root = config.CODESPRING_SUITE / "CodeSpringApp"
+    files = [root / "app.R", *sorted((root / "R").glob("*.R"))]
+    for path in files:
+        try:
+            if path.stat().st_mtime > when:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _stop_app(pid: int, wait_seconds: float = 10) -> bool:
+    """Stop an outdated shared CodeSpringApp. True once it has exited; False leaves it running."""
+    cmdline = _cmdline(pid)
+    if pid == os.getpid() or "runApp" not in cmdline or str(config.CODESPRING_SUITE) not in cmdline:
+        return False  # only ever stop a process that is really the shared app (guards a reused pid)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return False
+    deadline = time.time() + wait_seconds
+    while time.time() < deadline:
+        if not _alive(pid) or _zombie(pid):
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def _zombie(pid: int) -> bool:
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "Z"
+    except (OSError, IndexError):
+        return False
 
 
 def _start_app(wait_seconds: int = 120) -> int:
@@ -738,7 +788,11 @@ def _app_link(user, port, query, what) -> dict:
     else:
         how = ("First run the tunnel command in a terminal on your laptop (CSHL Wi-Fi or VPN) and leave it open; "
                f"then click the link within {minutes} minutes. The link works once; ask again for a new one.")
-    link = f"http://localhost:{port}/?ticket={ticket}{query}"
+    # Like the portal's links, the ticket goes in the #fragment: browsers never send it to the
+    # server, so link previews and prefetches can't use it up. CodeSpringApp's page swaps it for a
+    # key its browser keeps (an HttpOnly cookie), so reloads and reconnects keep working.
+    search = query.lstrip("&")
+    link = f"http://localhost:{port}/{'?' + search if search else ''}#ticket={ticket}"
     tunnel = f"ssh -N -L {port}:localhost:{port} {user}@{host}"
     return {
         "say": agent.link_say(what, link, minutes, tunnel, not forwarded),
