@@ -17,7 +17,7 @@ import sys
 
 from mcp.server.mcpserver import MCPServer
 
-from . import config, hub, runs, store
+from . import config, hub, portal_launch, runs, store
 from .permissions import current_user
 
 INSTRUCTIONS = """\
@@ -46,6 +46,9 @@ How to work with it:
 - If the request is novel, uncertain, high-impact, or no BSR workflow fits, say that BSR
   expertise is needed and offer request_bsr_review rather than improvising a full analysis.
 - Text marked TODO in a document has not been written yet; do not treat it as guidance.
+- When the user wants to open CodeSpringHub or its portal (to edit lab context, register data,
+  check what Claude sees, the inbox or activity), call open_portal and show its link as a
+  clickable link with how_to_open; give the tunnel command only if the link doesn't load.
 - If the user tells you something the lab context should remember, offer suggest_context_edit.
   A person reviews every suggestion; you cannot change the context yourself.
 - At the start of a conversation that uses the Hub, tell the user once that CodeSpringHub usage
@@ -287,7 +290,23 @@ def request_bsr_review(lab_id: str, summary: str, dataset_ids: list[str] | None 
     return f"BSR review ticket #{rid} created. A BSR team member will follow up with {user}."
 
 
+@hub_tool
+def open_portal() -> dict:
+    """Open the CodeSpringHub portal, the web page where people edit lab context and documents,
+    register data and code, check what Claude sees, and see the inbox and activity. Starts the
+    user's own portal on the cluster if it isn't running and returns a one-time link (valid
+    15 minutes) to show as a clickable link, plus a tunnel command in case it doesn't load."""
+    return portal_launch.open_portal(current_user())
+
+
 # ---- prompts -------------------------------------------------------------------
+
+@mcp.prompt(name="open_portal", title="Open the CodeSpringHub portal")
+def open_portal_prompt() -> str:
+    """Get a one-click link to your CodeSpringHub portal."""
+    return ("Open my CodeSpringHub portal: call open_portal and give me the link as a clickable link, "
+            "with its short instructions.")
+
 
 @mcp.prompt()
 def plan_analysis(dataset_id: str, question: str) -> str:

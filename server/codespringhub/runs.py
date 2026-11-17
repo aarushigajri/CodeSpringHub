@@ -353,12 +353,20 @@ def open_results(user, run_id, view="results") -> dict:
     path.write_text(str(time.time() + config.OPEN_LINK_TTL_SECONDS))
     os.chmod(path, 0o600)
     host = config.CONNECT_HOST or _laptop_host()
+    minutes = config.OPEN_LINK_TTL_SECONDS // 60
+    from .editing import codespringapp_port
+    if port == codespringapp_port(user):
+        # The Connect page's Claude Desktop setup forwards this port, so the link usually just works.
+        how = (f"Click the link within {minutes} minutes (it works once). If Claude Desktop was set up from the "
+               "Connect page, it opens straight away. If the page doesn't load, run the tunnel command in a "
+               "terminal on your laptop (CSHL Wi-Fi or VPN), leave it open, and ask for a new link.")
+    else:
+        how = ("On your laptop (CSHL Wi-Fi or VPN), run the tunnel command in a terminal and leave it open, "
+               f"then open the link within {minutes} minutes. The link works once; ask again for a new one.")
     return {
         "link": f"http://localhost:{port}/?ticket={ticket}&project={run_id}&view={view}",
         "tunnel_command": f"ssh -N -L {port}:localhost:{port} {user}@{host}",
-        "how_to_open": ("On your laptop (CSHL Wi-Fi or VPN), run the tunnel command in a terminal and leave it open, "
-                        f"then open the link within {config.OPEN_LINK_TTL_SECONDS // 60} minutes. The link works once; "
-                        "ask again for a new one."),
+        "how_to_open": how,
     }
 
 

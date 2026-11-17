@@ -485,6 +485,17 @@ carries on. If the very first connection fails (no key, wrong host), it exits li
 error shows up in Claude. Python standard library only; tested in `tests/test_connect_helper.py`
 and over real SSH. Windows has no helper yet: restart Claude Desktop after a drop.
 
+**Opening the portal from Claude.** The Claude Desktop setup's SSH command also carries
+`-L 127.0.0.1:<portal port>:localhost:<portal port>` and the same for the person's CodeSpringApp port
+(`41000 + uid % 20000` and `20000 + uid % 20000`), with `ExitOnForwardFailure=no` so a busy laptop port
+never breaks the Hub. The `open_portal` tool (`portal_launch.py`) finds the person's portal on this login
+node from `~/.codespringhub/portal-<node>.json` (written by the running portal), starts `portal.sh`
+detached if there is none, and returns `http://localhost:<port>/#ticket=…`. The ticket is a single-use,
+15-minute file in `~/.codespringhub/portal-tickets/` (700/600); the web app swaps it at `/api/redeem`
+for the portal secret, which only the browser keeps. So the long-lived link never enters a chat, as with
+CodeSpringApp's tickets in §13. Works the same on Windows (built-in `ssh.exe`) and through the Mac
+reconnect helper. A portal started this way keeps running after Claude closes.
+
 ### 12.4 Limits of this model
 
 - **Same trust as the cluster.** Everything runs as the researcher. A determined member could run their

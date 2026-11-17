@@ -8,6 +8,9 @@ app (at /mcp), protected by the same SSO token check.
 """
 
 import argparse
+import atexit
+import json
+import os
 import socket
 from pathlib import Path
 
@@ -55,11 +58,26 @@ def create_app(auth=None) -> FastAPI:
     @app.exception_handler(_Unauthorized)
     async def unauthorized(_, __):
         return JSONResponse(
-            {"detail": "This portal link is missing or out of date. Open the link printed when the portal started."},
+            {"detail": "This portal link is missing or out of date. Ask Claude to open CodeSpringHub for a new "
+                       "link, or open the link printed when the portal started."},
             status_code=401,
         )
 
     U = Depends(current)
+
+    class RedeemIn(BaseModel):
+        ticket: str
+
+    @app.post("/api/redeem")
+    def redeem(body: RedeemIn):
+        """A link from Claude's open_portal carries a one-time ticket, swapped here for the portal
+        secret, which only the browser keeps. No login needed: the ticket is the proof."""
+        swap = getattr(auth, "redeem", None)
+        token = swap(body.ticket) if swap else None
+        if not token:
+            return JSONResponse({"detail": "This link has expired or was already used. Ask Claude to open "
+                                           "CodeSpringHub again for a new one."}, status_code=401)
+        return {"token": token}
 
     # ---- who am I / labs ----------------------------------------------------
 
@@ -296,7 +314,18 @@ def main():
 
   Press Ctrl+C here to stop the portal.
 """, flush=True)
+    _record_running(port)
     uvicorn.run(create_app(auth), host="127.0.0.1", port=port, log_level="warning")
+
+
+def _record_running(port: int):
+    """Let Claude's open_portal find this portal (per login node: home folders are shared)."""
+    from .portal_launch import state_file
+    path = state_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"pid": os.getpid(), "port": port}))
+    os.chmod(path, 0o600)
+    atexit.register(lambda: path.unlink(missing_ok=True))
 
 
 if __name__ == "__main__":

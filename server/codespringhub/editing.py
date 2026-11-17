@@ -591,6 +591,11 @@ def portal_port(username: str) -> int:
     return 41000 + pwd.getpwnam(username).pw_uid % 20000
 
 
+def codespringapp_port(username: str) -> int:
+    """The first port CodeSpringApp tries for this person (run_codespringweb.sh: 20000 + uid % 20000)."""
+    return 20000 + pwd.getpwnam(username).pw_uid % 20000
+
+
 def _setup_mac(server: dict, target: str, host: str) -> str:
     """A Terminal command that (1) copies the reconnect helper (laptop/connect.py) from the
     cluster to ~/.codespringhub/, and (2) adds CodeSpringHub to Claude Desktop's config through
@@ -637,13 +642,19 @@ def connect_info(user, for_user: str | None = None) -> dict:
         raise NotFound(f"There's no cluster account called '{target}'.")
     host = config.CONNECT_HOST or _laptop_hostname()
     command = str(config.HUB_HOME / "env" / "bin" / "codespringhub")
+    app_port = codespringapp_port(target)
     server = {
         "command": "ssh",
         # BatchMode: never stop to ask for a password (nobody can answer inside Claude Desktop).
         # accept-new: trust the cluster's host key on the very first connection only; SSH still
         # refuses if that key ever changes, which is the check that protects against impostors.
+        # -L: while Claude Desktop is open, the same login also carries the person's portal and
+        # CodeSpringApp ports to their laptop (127.0.0.1 only), so links from open_portal and
+        # open_results just work. A port already busy on the laptop is skipped, never fatal.
         "args": ["-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
-                 "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=30", f"{target}@{host}", command],
+                 "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=30", "-o", "ExitOnForwardFailure=no",
+                 "-L", f"127.0.0.1:{port}:localhost:{port}", "-L", f"127.0.0.1:{app_port}:localhost:{app_port}",
+                 f"{target}@{host}", command],
     }
     return {
         "user": target, "host": host, "command": command,
@@ -651,6 +662,7 @@ def connect_info(user, for_user: str | None = None) -> dict:
         "setup_mac": _setup_mac(server, target, host),
         "setup_windows": _setup_windows(server),
         "portal_port": port,
+        "codespringapp_port": app_port,
         "portal_command": f"ssh -t -L {port}:localhost:{port} {target}@{host} {config.HUB_HOME / 'portal.sh'}",
         "notice": (
             "Connecting means your CodeSpringHub usage (which tools Claude uses, when, and their inputs; "
