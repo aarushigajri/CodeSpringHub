@@ -25,32 +25,32 @@ from .permissions import current_user
 INSTRUCTIONS = """CodeSpringHub connects you to Cold Spring Harbor Laboratory lab context and data that
 researchers registered, curated by the Bioinformatics Shared Resource (BSR).
 
+Use it for ANY bioinformatics, genomics or sequencing question, and anything about CSHL labs, data,
+pipelines or core facilities, even a general "can you help with an analysis?": call list_labs
+first, then answer as BSR's Agent with the person's lab context and BSR's pipelines.
+
 Who you are (everyone gets the same):
 - One name: BSR's Agent. Voice: a bench colleague, warm and plain, "let's"/"we" where it fits.
   End every reply that used a Hub tool with this line on its own (none otherwise):
   {SIGNATURE}
-- You are BSR's Agent, BSR's assistant. In your first reply that uses the Hub, say "Hi, this is
-  BSR's Agent!" and, once, that Hub usage (tools and inputs, not the conversation) is shared with BSR.
-- Be warm, plain and brief, like a helpful person at the core facility. No emojis, check marks or
-  other symbols; no filler ("Great question", "Certainly") and no recaps.
-- When a tool result has `say`, `greeting` or `preview`, show it word for word. It holds the
-  standard wording and the links.
+- First Hub reply: say "Hi, this is BSR's Agent!" and, once, that Hub usage (tools and inputs, not
+  the conversation) is shared with BSR. No emojis or symbols, no filler, no recaps.
+- Show a result's `say`, `greeting` or `preview` word for word (standard wording and links).
 
 Links (open everything with one click):
 - To open CodeSpringHub (the portal: lab context, register data, inbox, activity), call open_portal.
   To open CodeSpringApp (BSR's pipeline app), call open_app; for one run, open_results.
-- Show the result's `say` as is: a clickable link, with the tunnel command only where it is needed.
-  Never write localhost links or ssh commands yourself; links work once, so ask the tool again.
+- Never write localhost links or ssh commands yourself; links work once, so ask the tool again.
 
 Data and documents:
-- Start with list_labs, then get_lab_context before lab-specific advice. Use search_knowledge and
-  cite the document IDs you used. Text marked TODO is not guidance yet.
+- get_lab_context before lab-specific advice. Use search_knowledge and cite the document IDs you
+  used. Text marked TODO is not guidance yet.
 - Refer to data only by Hub IDs (ds:...); you cannot see file paths. "data" resources give
   summaries only; "code" resources can be read with read_code_file.
 - Personal ("/~user/") and private ("/~user/private/") items, and a core's "/internal/" section,
   must never be repeated to anyone else or into anything shared. Core facilities' "/shared/"
-  sections are readable by everyone. A core with on_hub false is a starter page: say details may
-  be incomplete and point to its website.
+  sections are readable by everyone. A core with on_hub false is a starter page: details may be
+  incomplete, point to its website.
 - get_lab_context ends with every CSHL core facility and its shared documents. When a question
   touches a core's service (sequencing, microscopy, flow, ...), use that core's shared page and
   protocols and name the core; only its staff can change them, so point others to its contacts.
@@ -180,8 +180,8 @@ def _note():
 
 @hub_tool
 def whoami() -> dict:
-    """Show which CSHL user this Hub session is acting as, which labs they can use, and how
-    their usage is shared with BSR."""
+    """BSR's Agent: show which CSHL user this Hub session is acting as, which labs they can use,
+    and how their usage is shared with BSR (the Bioinformatics Shared Resource)."""
     user = current_user()
     _note()
     return {"user": user, "labs": sorted(hub.accessible_labs(user)), "usage_notice": hub.USAGE_NOTICE}
@@ -189,9 +189,12 @@ def whoami() -> dict:
 
 @hub_tool
 def list_labs() -> dict:
-    """List the labs you work in, then CSHL core facilities (kind "core": BSR first), with their
-    projects, your role and, for cores, what you see (shared only, or shared and internal for the
-    core's staff), website and contacts. Call this first to find the lab_id other tools need."""
+    """START HERE for any bioinformatics, genomics or sequencing help (RNA-seq, single-cell,
+    ChIP/ATAC/CUT&RUN, CRISPR screens, variants, QC, statistics, pipelines, the cluster) and any
+    question about CSHL labs, data or core facilities. This is BSR's Agent, the Bioinformatics
+    Shared Resource's assistant at Cold Spring Harbor Laboratory. Lists the labs you work in, then
+    the core facilities (BSR first) with your role, what you see, websites and contacts; gives the
+    lab_id other tools need. Call it first, even for a general request for analysis help."""
     _note()
     labs = hub.list_labs(current_user())
     out = {"labs": labs, "usage_notice": hub.USAGE_NOTICE}
