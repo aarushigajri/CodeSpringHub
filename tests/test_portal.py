@@ -44,18 +44,18 @@ def test_labs_and_permissions(api):
 
 
 def test_edit_context_is_live_for_claude_and_committed(api, hub):
-    api.put("/api/labs/bsr/docs/context.md", json={"text": "# BSR\n\nWe use GRCm39 for mouse.\n"}).raise_for_status()
+    api.put("/api/labs/bsr/docs/shared/context.md", json={"text": "# BSR\n\nWe use GRCm39 for mouse.\n"}).raise_for_status()
     r = api.post("/api/tools/get_lab_context", json={"arguments": {"lab_id": "bsr"}}).json()
     assert not r["is_error"] and "GRCm39" in r["content"][0]
-    assert git_log(hub)[0].endswith("portal: edit bsr/context.md")
+    assert git_log(hub)[0].endswith("portal: edit bsr/shared/context.md")
 
 
 def test_create_edit_delete_document(api):
-    rel = api.post("/api/labs/bsr/docs", json={"category": "protocols", "title": "Library prep QC"}).json()["rel_path"]
-    assert rel == "protocols/library-prep-qc.md"
+    rel = api.post("/api/labs/bsr/docs", json={"category": "protocols", "title": "Library prep QC", "scope": "shared"}).json()["rel_path"]
+    assert rel == "shared/protocols/library-prep-qc.md"
     assert "TODO" in api.get(f"/api/labs/bsr/docs/{rel}").json()["text"]
     hits = api.post("/api/tools/search_knowledge", json={"arguments": {"query": "Library prep"}}).json()
-    assert "doc:bsr/protocols/library-prep-qc" in hits["content"][0]
+    assert "doc:bsr/shared/protocols/library-prep-qc" in hits["content"][0]
     assert api.delete(f"/api/labs/bsr/docs/{rel}").status_code == 200
     assert api.get(f"/api/labs/bsr/docs/{rel}").status_code == 404
 
@@ -77,9 +77,9 @@ def test_register_dataset_with_folder_browser(api, hub):
     assert "demo-rnaseq" in [f["name"] for f in listing["folders"]]
 
     body = {"title": "Second copy", "path": str(hub / "data" / "demo-rnaseq"), "project": "codespringhub-pilot",
-            "assay": "rna-seq", "description": "test", "sensitivity": "sensitive"}
+            "assay": "rna-seq", "description": "test", "sensitivity": "sensitive", "scope": "shared"}
     ds_id = api.post("/api/labs/bsr/datasets", json=body).json()["id"]
-    assert ds_id == "ds:bsr/second-copy"
+    assert ds_id == "ds:bsr/shared/second-copy"
     r = api.post("/api/tools/query_table", json={"arguments": {
         "dataset_id": ds_id, "asset": "counts.tsv", "sql": "SELECT 1"}}).json()
     assert r["is_error"] and "sensitive" in r["content"][0]
@@ -133,16 +133,16 @@ def test_tool_list_for_try_it(api):
 def test_save_works_for_a_user_without_git_setup(api, hub, monkeypatch):
     # Simulates a BSR member who has never run `git config user.name`.
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-    api.put("/api/labs/bsr/docs/context.md", json={"text": "# BSR\n\nNew text.\n"}).raise_for_status()
-    assert git_log(hub)[0].endswith("portal: edit bsr/context.md")
+    api.put("/api/labs/bsr/docs/shared/context.md", json={"text": "# BSR\n\nNew text.\n"}).raise_for_status()
+    assert git_log(hub)[0].endswith("portal: edit bsr/shared/context.md")
 
 
 def test_git_failure_never_blocks_a_save(api, hub):
     # Break the repository: the save must still succeed and the problem is recorded.
     (hub / "hub" / ".git" / "HEAD").write_text("garbage")
-    r = api.put("/api/labs/bsr/docs/context.md", json={"text": "# BSR\n\nSaved anyway.\n"})
+    r = api.put("/api/labs/bsr/docs/shared/context.md", json={"text": "# BSR\n\nSaved anyway.\n"})
     assert r.status_code == 200
-    assert "Saved anyway" in (config.KNOWLEDGE_DIR / "bsr" / "context.md").read_text()
+    assert "Saved anyway" in (config.KNOWLEDGE_DIR / "bsr" / "shared" / "context.md").read_text()
     assert "portal:history_not_recorded" in [a["tool"] for a in api.get("/api/activity").json()]
 
 

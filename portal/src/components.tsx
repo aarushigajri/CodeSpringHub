@@ -254,3 +254,37 @@ export function useUnsavedWarning(dirty: boolean) {
     return () => window.removeEventListener("beforeunload", h);
   }, [dirty]);
 }
+
+// ---- "Who can see it?" -------------------------------------------------------------
+
+export function ScopeChoices({ lab, scope, setScope }: {
+  lab: import("./api").Lab; scope: string; setScope: (s: import("./api").Scope) => void;
+}) {
+  const insider = lab.kind === "core" ? lab.role === "staff" || lab.role === "lead" : lab.role !== "bsr";
+  const opts: [import("./api").Scope, string, string, boolean][] = lab.kind === "core"
+    ? [
+        ["shared", "Everyone", "Shared: every lab using CodeSpringHub can read it.", lab.can_edit],
+        ["lab", "Core staff", "Internal: only this core's staff.", lab.can_edit],
+        ["personal", "Me and the core lead", "Other staff can't see it.", insider],
+        ["private", "Only me", "Not the lead, not other staff.", insider],
+      ]
+    : [
+        ["lab", "The whole lab", "All lab members, and BSR when helping your lab.", lab.can_edit],
+        ["personal", "Me and my PI", "Work in progress. Other members and BSR can't see it.", insider],
+        ["private", "Only me", "Not your PI, not BSR, not other members.", insider],
+      ];
+  return (
+    <>
+      <div className="label">Who can see it?</div>
+      <div className={`choices ${opts.length === 4 ? "four" : "three"}`}>
+        {opts.map(([id, label, explain, ok]) => (
+          <label key={id} className={`choice ${scope === id ? "on" : ""} ${ok ? "" : "disabled"}`}>
+            <input type="radio" disabled={!ok} checked={scope === id} onChange={() => setScope(id)} />
+            <strong>{label}</strong>
+            <span className="muted">{explain}</span>
+          </label>
+        ))}
+      </div>
+    </>
+  );
+}

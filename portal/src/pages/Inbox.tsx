@@ -5,7 +5,7 @@ import { Badge, Empty, Help, attempt } from "../components";
 
 type Suggestion = {
   id: string; ts: string; user: string; lab_id: string; doc_id: string | null; suggestion: string; status: string;
-  scope: "lab" | "personal" | "private"; can_change: boolean;
+  scope: "lab" | "shared" | "personal" | "private"; can_change: boolean;
 };
 type Review = { id: number; key: string; ts: string; user: string; lab_id: string; summary: string; resource_ids: string; status: string };
 

@@ -1,0 +1,19 @@
+# Who can use each CodeSpringApp pipeline through CodeSpringHub. BSR staff edit this (portal:
+# BSR workflows page, or by hand). IDs are CodeSpringApp's pipeline ids (`codespring-run catalog`).
+#
+#   public    every lab using the Hub: Claude offers it and, if the app allows it from the Hub,
+#             can start it from the chat
+#   internal  BSR staff only, plus any labs listed under `labs`; everyone else is told BSR runs it
+#             for them (request_bsr_review)
+#
+# A pipeline that isn't listed gets `default`, so a new pipeline is never public by accident.
+# This governs what Claude offers and starts. It doesn't lock the CodeSpringApp install itself.
+default: internal
+pipelines:
+  rnaseq: public        # bulk RNA-seq: standard tools in a fixed order
+  atac: public          # bulk ATAC-seq
+  chip: public          # bulk ChIP-seq
+  cutrun: public        # CUT&RUN
+  fetchngs: public      # downloading public data
+  scrna: internal       # single-cell: analysis choices need BSR
+  sarek: internal       # germline/somatic variants: interpretation needs BSR

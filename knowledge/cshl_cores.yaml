@@ -1,0 +1,76 @@
+# CSHL core facilities, for `hub seed-cores`: each one not yet in the Hub gets a template page that
+# BSR keeps until the core joins (`hub add-core <id> --group <staff group>`).
+# Source: the public CSHL core facilities list (https://www.cshl.edu/research/core-facilities/),
+# 17 Nov 2026. Descriptions are one-line summaries of that page; each core should replace them.
+# Bioinformatics is BSR (knowledge/bsr), so it isn't repeated here.
+source: https://www.cshl.edu/research/core-facilities/
+retrieved: "2026-11-17"
+cores:
+  - id: sequencing
+    name: Sequencing Technologies and Analysis
+    description: DNA and RNA sequencing services and analysis.
+    website: https://www.cshl.edu/research/cancer/sequencing-technologies-and-analysis/
+  - id: single-cell
+    name: Single-Cell Biology
+    description: Analysis of individual cells in biological samples.
+    website: https://www.cshl.edu/research/cancer/single-cell-biology/
+  - id: functional-genomics
+    name: Functional Genomics
+    description: Genome-wide functional studies of gene activity.
+    website: https://www.cshl.edu/research/cancer/functional-genomics/
+  - id: mass-spec
+    name: Mass Spectrometry
+    description: Protein and small-molecule analysis by mass spectrometry.
+    website: https://www.cshl.edu/research/cancer/mass-spectrometry-facility/
+  - id: flow-cytometry
+    name: Flow Cytometry
+    description: Cell analysis and sorting by flow cytometry.
+    website: https://www.cshl.edu/research/cancer/flow-cytometry/
+  - id: microscopy
+    name: Microscopy
+    description: Light and electron microscopy instruments and support.
+    website: https://www.cshl.edu/research/cancer/microscopy/
+  - id: cryo-em
+    name: Cryo EM
+    description: Cryo-electron microscopy for high-resolution structural imaging.
+    website: https://www.cshl.edu/research/core-facilities/cryo-em-facility/
+  - id: animal-tissue-imaging
+    name: Animal & Tissue Imaging
+    description: Imaging of animal and tissue samples.
+    website: https://www.cshl.edu/research/cancer/animal-tissue-imaging/
+  - id: mapseq-barseq
+    name: MAPseq/BARseq
+    description: Barcode-based sequencing methods for mapping neural connections.
+    website: https://www.cshl.edu/research/core-facilities/mapseq/
+  - id: neuroimaging-behavior
+    name: Neuroimaging and Behavior
+    description: Neuroimaging and behavioral testing.
+    website: https://www.cshl.edu/research/core-facilities/neuroimaging-and-behavior/
+  - id: antibody-technologies
+    name: Antibody Technologies
+    description: Development and use of antibodies for research.
+    website: https://www.cshl.edu/research/cancer/antibody-technologies/
+  - id: organoid
+    name: Organoid
+    description: Culture and study of three-dimensional organoid models.
+    website: https://www.cshl.edu/research/cancer/organoid/
+  - id: tissue-culture
+    name: Tissue Culture
+    description: Growth and maintenance of cells in culture.
+    website: https://www.cshl.edu/research/core-facilities/tissue-culture/
+  - id: enzymes-reagents
+    name: Enzyme & Reagents
+    description: Enzymes and laboratory reagents for researchers.
+    website: https://www.cshl.edu/research/core-facilities/enzyme-and-reagents/
+  - id: animal
+    name: Animal
+    description: Animal housing and research support for CSHL investigators.
+    website: https://www.cshl.edu/research/cancer/animal-facility/
+  - id: plant-genetics-farms
+    name: Plant Genetics and Farms
+    description: Plant genetics research support and cultivation.
+    website: https://www.cshl.edu/research/core-facilities/plant-genetics-and-farms/
+  - id: machine-shop
+    name: Machine Shop
+    description: Custom fabrication and machining of research equipment and parts.
+    website: https://www.cshl.edu/research/core-facilities/machine-shop/

@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Ctx, go } from "../App";
-import { DocInfo, Lab, Project, get, post, put } from "../api";
-import { Empty, Help, MarkdownEditor, Modal, attempt, useUnsavedWarning } from "../components";
+import { DocInfo, Lab, Project, Scope, get, post, put } from "../api";
+import { Empty, Help, MarkdownEditor, Modal, ScopeChoices, attempt, useUnsavedWarning } from "../components";
+import CorePage from "./CorePage";
 import Datasets from "./Datasets";
 
 const TABS = [
@@ -34,6 +35,7 @@ export default function LabPage({ ctx, labId, tab, query }: { ctx: Ctx; labId: s
     await load();
     await ctx.reloadLabs();
   };
+  if (lab.kind === "core") return <CorePage ctx={ctx} lab={lab} tab={tab} query={query} onChanged={reload} />;
 
   return (
     <div className="page">
@@ -218,10 +220,12 @@ function Documents({ ctx, lab, openNew, onChanged }: { ctx: Ctx; lab: Lab; openN
   );
 }
 
-function NewDocument({ ctx, lab, onClose, onCreated }: { ctx: Ctx; lab: Lab; onClose: () => void; onCreated: () => Promise<void> }) {
+export function NewDocument({ ctx, lab, onClose, onCreated, initialScope }: {
+  ctx: Ctx; lab: Lab; onClose: () => void; onCreated: () => Promise<void>; initialScope?: Scope;
+}) {
   const [category, setCategory] = useState("guidance");
   const [title, setTitle] = useState("");
-  const [scope, setScope] = useState<"lab" | "personal" | "private">(lab.can_edit ? "lab" : "personal");
+  const [scope, setScope] = useState<Scope>(initialScope ?? (lab.can_edit ? "lab" : "personal"));
   async function create() {
     const r = await attempt(() => post<{ rel_path: string }>(`/api/labs/${lab.lab_id}/docs`, { category, title, scope }));
     if (r) {
@@ -244,24 +248,7 @@ function NewDocument({ ctx, lab, onClose, onCreated }: { ctx: Ctx; lab: Lab; onC
           );
         })}
       </div>
-      <div className="label">Who can see it?</div>
-      <div className="choices three">
-        <label className={`choice ${scope === "lab" ? "on" : ""}`}>
-          <input type="radio" disabled={!lab.can_edit} checked={scope === "lab"} onChange={() => setScope("lab")} />
-          <strong>The whole lab</strong>
-          <span className="muted">All lab members, and BSR when helping your lab.</span>
-        </label>
-        <label className={`choice ${scope === "personal" ? "on" : ""}`}>
-          <input type="radio" disabled={lab.role === "bsr"} checked={scope === "personal"} onChange={() => setScope("personal")} />
-          <strong>Me and my PI</strong>
-          <span className="muted">Other members and BSR can't see it.</span>
-        </label>
-        <label className={`choice ${scope === "private" ? "on" : ""}`}>
-          <input type="radio" disabled={lab.role === "bsr"} checked={scope === "private"} onChange={() => setScope("private")} />
-          <strong>Only me</strong>
-          <span className="muted">Not your PI, not BSR, not other members.</span>
-        </label>
-      </div>
+      <ScopeChoices lab={lab} scope={scope} setScope={setScope} />
       <label>
         Title
         <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)}
@@ -278,7 +265,7 @@ function NewDocument({ ctx, lab, onClose, onCreated }: { ctx: Ctx; lab: Lab; onC
 
 // ---- History ---------------------------------------------------------------------
 
-function History({ labId }: { labId: string }) {
+export function History({ labId }: { labId: string }) {
   const [rows, setRows] = useState<{ commit: string; author: string; date: string; message: string }[] | null>(null);
   useEffect(() => {
     get(`/api/labs/${labId}/history`).then(setRows).catch(() => setRows([]));

@@ -108,11 +108,15 @@ While it runs:
 
 ## What to tell researchers
 
+- Some pipelines are run by BSR for labs rather than started from a chat (single-cell and variant
+  calling by default; BSR's list is `knowledge/bsr/shared/pipelines.yaml`). For those, offer a BSR
+  review request instead of walking them through it.
+
 - Each step uses the CPU, memory and time limits written into CodeSpringLab's Slurm scripts;
   nobody tunes them per run. If a step runs out of memory or time, that's a question for BSR.
 - Starting from Claude, the run is identical to clicking through CodeSpringApp, and the project
   appears in their CodeSpringApp project list.
-- The small example dataset (`ds:bsr/codespringlab-rnaseq-example`: 6 mouse samples, control vs
+- The small example dataset (`ds:bsr/shared/codespringlab-rnaseq-example`: 6 mouse samples, control vs
   treated) finishes in roughly 10-20 minutes and is the best first try.
 
 ## Known limitations (November 2026)

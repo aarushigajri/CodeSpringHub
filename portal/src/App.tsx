@@ -105,7 +105,23 @@ export default function App() {
         <nav>
           {navItem("/", "Home", !section)}
           <div className="nav-label">Your labs</div>
-          {labs.map((l) => navItem(`/lab/${l.lab_id}/about`, l.name, section === "lab" && a === l.lab_id))}
+          {labs.filter((l) => l.kind !== "core").map((l) => navItem(`/lab/${l.lab_id}/about`, l.name, section === "lab" && a === l.lab_id))}
+          <div className="nav-label">Core facilities</div>
+          {labs.filter((l) => l.lab_id === "bsr").map((l) => navItem(`/lab/${l.lab_id}/shared`, "BSR", section === "lab" && a === "bsr"))}
+          {(() => {
+            const cores = labs.filter((l) => l.kind === "core" && l.lab_id !== "bsr");
+            if (!cores.length) return null;
+            const inCore = section === "lab" && cores.some((c) => c.lab_id === a);
+            const ownFirst = [...cores].sort((x, y) => Number(y.role === "staff" || y.role === "lead") - Number(x.role === "staff" || x.role === "lead"));
+            return (
+              <details className="nav-cores" open={inCore || undefined}>
+                <summary className={inCore ? "active" : ""}>Cores</summary>
+                {ownFirst.map((c) => navItem(`/lab/${c.lab_id}/shared`, c.name, section === "lab" && a === c.lab_id,
+                  c.role === "staff" || c.role === "lead" ? <span className="count">yours</span>
+                    : c.on_hub === false ? <span className="soon"> · soon</span> : null))}
+              </details>
+            );
+          })()}
           <div className="nav-label">Shared</div>
           {navItem("/workflows", "BSR workflows", section === "workflows")}
           {navItem("/inbox", "Inbox", section === "inbox", inboxCount > 0 && <span className="count">{inboxCount}</span>)}

@@ -51,7 +51,10 @@ export default function DocumentEditor({ ctx, labId, relPath, suggestion }: {
     }
   }
 
-  const backHref = relPath === "context.md" ? `#/lab/${labId}/about` : `#/lab/${labId}/documents`;
+  const isCore = lab?.kind === "core";
+  const coreArea = isCore ? (relPath.startsWith("internal/") ? "internal" : relPath.startsWith("shared/") ? "shared" : null) : null;
+  const backHref = isCore ? `#/lab/${labId}/${coreArea === "internal" || relPath.match(/^(members|private)\//) ? "internal" : "shared"}`
+    : relPath === "context.md" ? `#/lab/${labId}/about` : `#/lab/${labId}/documents`;
   const personalMatch = relPath.match(/^members\/([^/]+)\/(.+)\.md$/);
   const privateMatch = relPath.match(/^private\/([^/]+)\/(.+)\.md$/);
   const docId = personalMatch
@@ -73,6 +76,8 @@ export default function DocumentEditor({ ctx, labId, relPath, suggestion }: {
             Claude refers to this as <code>{docId}</code>
             {personalMatch && <> · <span className="badge warn">Personal</span> only {personalMatch[1] === ctx.me.user ? "you" : personalMatch[1]} and the lab's PI can see it</>}
             {privateMatch && <> · <span className="badge warn">Only you</span> nobody else can see it, not even your PI</>}
+            {coreArea === "shared" && <> · <span className="badge info">Shared</span> every lab using CodeSpringHub can read it</>}
+            {coreArea === "internal" && <> · <span className="badge warn">Internal</span> only {lab?.name}'s staff can see it</>}
           </p>
         </div>
       </div>

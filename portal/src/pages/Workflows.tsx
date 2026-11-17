@@ -49,6 +49,7 @@ export default function Workflows({ ctx }: { ctx: Ctx }) {
           </tbody>
         </table>
       )}
+      <PipelineAccess ctx={ctx} />
       {editing && <WorkflowForm ctx={ctx} existing={editing === "new" ? null : editing}
         onClose={() => setEditing(null)} onSaved={load} />}
     </div>
@@ -114,6 +115,91 @@ function WorkflowForm({ ctx, existing, onClose, onSaved }: {
         <span className="spacer" />
         <button onClick={onClose}>Cancel</button>
         <button className="primary" onClick={save} disabled={!w.name.trim() || !w.assays.length}>Save</button>
+      </div>
+    </Modal>
+  );
+}
+
+// ---- Who may use each CodeSpringApp pipeline through the Hub ------------------------
+
+type PipelineRow = { id: string; name: string; access: "public" | "internal"; labs: string[]; listed: boolean; you_can_use: boolean };
+
+function PipelineAccess({ ctx }: { ctx: Ctx }) {
+  const [data, setData] = useState<{ default: string; pipelines: PipelineRow[]; can_edit: boolean } | null>(null);
+  const [labsFor, setLabsFor] = useState<PipelineRow | null>(null);
+  const labs = ctx.labs.filter((l) => l.kind !== "core");
+
+  async function load() {
+    setData(await get("/api/pipelines"));
+  }
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function change(p: PipelineRow, access: "public" | "internal", chosen: string[] = p.labs) {
+    const ok = await attempt(() => put(`/api/pipelines/${p.id}`, { access, labs: access === "internal" ? chosen : [] }),
+      access === "public" ? `${p.name} is now open to every lab.` : `${p.name} is now run by BSR${chosen.length ? " (plus the labs you chose)" : ""}.`);
+    if (ok) await load();
+  }
+
+  if (!data) return <div className="loading">Loading…</div>;
+  return (
+    <section className="panel">
+      <h2>CodeSpringApp pipelines: who can use them</h2>
+      <Help>
+        <Badge kind="ok">Every lab</Badge> Claude offers it to everyone and can start it from the chat where the app
+        allows. <Badge kind="warn">BSR runs it</Badge> Only BSR staff (and any labs you add); everyone else is told BSR
+        runs it for them and offered a review request. Pipelines not set here are BSR-only.
+        {!data.can_edit && " Only BSR staff can change this."}
+      </Help>
+      <table>
+        <thead><tr><th>Pipeline</th><th>Who can use it</th><th>Extra labs</th>{data.can_edit && <th />}</tr></thead>
+        <tbody>
+          {data.pipelines.map((p) => (
+            <tr key={p.id}>
+              <td><strong>{p.name}</strong><div className="muted small"><code>{p.id}</code>{!p.listed && " · not set: BSR only"}</div></td>
+              <td>{p.access === "public" ? <Badge kind="ok">Every lab</Badge> : <Badge kind="warn">BSR runs it</Badge>}</td>
+              <td className="muted small">{p.access === "internal" && p.labs.length ? p.labs.join(", ") : "–"}</td>
+              {data.can_edit && (
+                <td className="actions-cell">
+                  {p.access === "public"
+                    ? <button onClick={() => change(p, "internal", [])}>Make BSR-only</button>
+                    : <>
+                        <button onClick={() => change(p, "public")}>Open to every lab</button>
+                        <button onClick={() => setLabsFor(p)}>Choose labs</button>
+                      </>}
+                </td>
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {labsFor && (
+        <LabsPicker row={labsFor} labs={labs.map((l) => [l.lab_id, l.name])} onClose={() => setLabsFor(null)}
+          onSave={async (chosen) => { await change(labsFor, "internal", chosen); setLabsFor(null); }} />
+      )}
+    </section>
+  );
+}
+
+function LabsPicker({ row, labs, onClose, onSave }: {
+  row: PipelineRow; labs: [string, string][]; onClose: () => void; onSave: (chosen: string[]) => Promise<void>;
+}) {
+  const [chosen, setChosen] = useState<string[]>(row.labs);
+  return (
+    <Modal title={`Which labs may use ${row.name} themselves?`} onClose={onClose}>
+      <Help>BSR staff can always use it. Labs ticked here can too; every other lab is told BSR runs it for them.</Help>
+      {labs.length === 0 && <Empty title="No labs on the Hub yet." />}
+      {labs.map(([id, name]) => (
+        <label key={id} className="check">
+          <input type="checkbox" checked={chosen.includes(id)}
+            onChange={(e) => setChosen(e.target.checked ? [...chosen, id] : chosen.filter((x) => x !== id))} />
+          {name} <code className="muted small">{id}</code>
+        </label>
+      ))}
+      <div className="modal-foot">
+        <button onClick={onClose}>Cancel</button>
+        <button className="primary" onClick={() => onSave(chosen)}>Save</button>
       </div>
     </Modal>
   );

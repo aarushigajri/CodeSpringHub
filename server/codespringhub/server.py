@@ -17,7 +17,7 @@ import sys
 
 from mcp.server.mcpserver import Image, MCPServer
 
-from . import agent, config, hub, portal_launch, runs, store
+from . import agent, config, hub, pipelines, portal_launch, runs, store
 from .errors import HubError
 from .permissions import current_user
 
@@ -36,13 +36,22 @@ How to work with it:
 - Start with list_labs, then get_lab_context for the relevant lab before giving lab-specific advice.
 - Use search_knowledge to find protocols, BSR guidance and lab notes; cite document IDs you relied on.
 - Refer to data only by Hub IDs (ds:...). You cannot see file paths and should not ask for them.
-- Resources are either lab-shared or personal (IDs containing "/~user/", visible only to that
-  member and their PI). Never repeat personal content to anyone else or into lab-shared documents.
+- Resources are lab-shared, personal (IDs containing "/~user/", visible only to that member and
+  their PI) or private (IDs containing "/~user/private/", only that member, not even their PI).
+  Never repeat personal or private content to anyone else or into lab-shared documents.
+- Core facilities (list_labs kind "core": BSR, Sequencing, Microscopy, ...) have a shared section
+  (IDs "doc:<core>/shared/...", "ds:<core>/shared/...") that everyone using the Hub can read, such
+  as protocols, submission guidelines, example data and scripts, and an internal section
+  ("/internal/") only the core's own staff can read. Use a core's shared section when a question
+  touches its services. Never repeat a core's internal content to anyone outside that core, or
+  into anything shared. A core marked on_hub false is a starter page BSR made from CSHL's public
+  list: say details may be incomplete and point to its website. Only a core's staff can change its
+  pages; others should contact the people in its contacts.
 - Registered resources are "data" (you get summaries only) or "code" (lab scripts and pipelines:
   read the source with read_code_file to explain, debug or adapt it).
 - Before proposing any analysis, call list_workflows. BSR's own pipelines (CodeSpringApp with
   CodeSpringLab's scripts) come first: recommend them, with their steps, references and settings
-  as BSR runs them, and read guidance doc:bsr/guidance/codespring-pipelines. nf-core pipelines are a
+  as BSR runs them, and read guidance doc:bsr/shared/guidance/codespring-pipelines. nf-core pipelines are a
   secondary option: mention one only when no BSR pipeline fits, and say it is not BSR's standard.
 - When a BSR pipeline fits, do not deviate from it: don't substitute other tools, references,
   parameters or your own scripts, and don't write ad-hoc Slurm or shell commands. If the user needs
@@ -54,7 +63,7 @@ How to work with it:
   (below), the plan preview carries this, so say it up front only if space is tight or short.
   If space is tight or short, lead with that and
   suggest freeing space or asking BSR. For pipelines run in CodeSpringApp, give the rough sizes in
-  doc:bsr/guidance/codespring-pipelines ("Storage") and say they are rough.
+  doc:bsr/shared/guidance/codespring-pipelines ("Storage") and say they are rough.
 - To run an analysis (bulk RNA-seq so far), always in this order:
   1. check_storage (with the dataset). Mention it now only if space is tight or short; otherwise it
      appears in the plan preview.
@@ -162,8 +171,9 @@ def whoami() -> dict:
 
 @hub_tool
 def list_labs() -> dict:
-    """List the labs you can access through CodeSpringHub, with their projects and your role.
-    Call this first to find the lab_id other tools need."""
+    """List the labs you work in, then CSHL core facilities (kind "core": BSR first), with their
+    projects, your role and, for cores, what you see (shared only, or shared and internal for the
+    core's staff), website and contacts. Call this first to find the lab_id other tools need."""
     _note()
     return {"labs": hub.list_labs(current_user()), "usage_notice": hub.USAGE_NOTICE}
 
@@ -174,7 +184,13 @@ def get_lab_context(lab_id: str) -> str:
     plus an index of its knowledge documents. Read this before lab-specific answers."""
     ctx = hub.lab_context(current_user(), lab_id)
     body = ctx["context"] or "(This lab has no context.md yet.)"
-    index = "\n".join(f"- {d['id']}  [{d['category']}]  {d['title']}" for d in ctx["documents"])
+    if ctx.get("kind") == "core":
+        who = ", ".join(f"{c['name']} ({c.get('email', '')})" for c in ctx.get("contacts", [])) or "see its website"
+        body = (f"{body}\n\n---\nCore facility. Website: {ctx.get('website') or 'not given'}. Contacts: {who}."
+                + ("" if ctx.get("on_hub") else " This is a starter page; the core isn't on CodeSpringHub yet."))
+        if "internal_context" in ctx:
+            body += f"\n\n---\nINTERNAL (core staff only; never share outside the core):\n{ctx['internal_context']}\n\n{ctx['note']}"
+    index = "\n".join(f"- {d['id']}  [{d['category']}, {d['scope']}]  {d['title']}" for d in ctx["documents"])
     return f"{body}\n\n---\nKnowledge documents (read with read_document):\n{index or '(none)'}"
 
 
@@ -190,7 +206,7 @@ def search_knowledge(query: str, lab_id: str | None = None) -> list[dict]:
 
 @hub_tool
 def read_document(doc_id: str) -> str:
-    """Read one knowledge document in full by its ID (e.g. 'doc:bsr/guidance/ai-assisted-analysis')."""
+    """Read one knowledge document in full by its ID (e.g. 'doc:bsr/shared/guidance/ai-assisted-analysis')."""
     return hub.get_document(current_user(), doc_id).path.read_text()
 
 
@@ -256,20 +272,22 @@ def list_workflows(assay: str | None = None) -> dict:
     except Exception as e:  # noqa: BLE001  (the shared install may be unavailable; still answer)
         bsr = {"pipelines": [], "unavailable": str(e)}
     return {
-        "bsr_pipelines": bsr.get("pipelines", []),
+        "bsr_pipelines": pipelines.annotate(current_user(), bsr.get("pipelines", [])),
         "rnaseq_options": bsr.get("rnaseq_options"),
         "bsr_pipelines_unavailable": bsr.get("unavailable"),
         "secondary_nfcore": hub.list_workflows(assay),
         "rule": ("Use a BSR pipeline when one fits and follow it exactly. Ones marked runnable_from_hub can be "
-                 "started from this chat with plan_analysis; the others are run in CodeSpringApp. nf-core "
-                 "pipelines are secondary: say they are not BSR's standard and offer request_bsr_review."),
+                 "started from this chat with plan_analysis; the others are run in CodeSpringApp. A pipeline with "
+                 "you_can_use false is one BSR runs for labs (access 'internal', e.g. single-cell): say so, offer "
+                 "request_bsr_review, and don't guide them through running it. nf-core pipelines are secondary: "
+                 "say they are not BSR's standard and offer request_bsr_review."),
         "storage": {
             "rnaseq": ("Writes about 5.6x-9.1x the gzipped FASTQ size (typically 7x; STAR's two BAMs are most "
                        "of it). check_storage gives the exact range for a dataset and the free space."),
-            "other_pipelines": "Rough sizes only: see 'Storage' in doc:bsr/guidance/codespring-pipelines.",
+            "other_pipelines": "Rough sizes only: see 'Storage' in doc:bsr/shared/guidance/codespring-pipelines.",
             "rule": "Tell the user free space and the expected size range before starting any project.",
         },
-        "guidance": "doc:bsr/guidance/codespring-pipelines",
+        "guidance": "doc:bsr/shared/guidance/codespring-pipelines",
     }
 
 
@@ -279,6 +297,10 @@ def analysis_options(assay: str = "rna-seq", dataset_id: str | None = None) -> d
     BSR's Agent greeting, what the pipeline does, and the standard questions to ask (pipeline,
     pathway gene sets, extra quantification, run mode) with their options and defaults. Ask them
     all together, as a selection if you can, and pass the answers to plan_analysis."""
+    if not pipelines.can_use(current_user(), "rnaseq"):
+        return {"runnable": False, "support": agent.support(),
+                "next": ("BSR runs bulk RNA-seq for this lab rather than it being started from a chat: offer "
+                         "request_bsr_review with the dataset and question, and show the support block. " + agent.STYLE)}
     if assay.lower().replace("_", "-") not in ("rna-seq", "rnaseq", "bulk-rna-seq"):
         return {"runnable": False, "support": agent.support(),
                 "next": ("Only bulk RNA-seq can be started from here so far. Say which BSR pipeline fits (list_workflows) "

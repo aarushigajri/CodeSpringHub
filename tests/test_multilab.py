@@ -126,7 +126,7 @@ def test_code_resources_can_be_read_in_full(api, hub):
     out = api.post("/api/tools/read_code_file", json={"arguments": {"resource_id": code_id, "path": "R/de.R"}}).json()
     assert not out["is_error"] and "DESeq2" in out["content"][0]
     # Data resources never give full file contents.
-    out = api.post("/api/tools/read_code_file", json={"arguments": {"resource_id": "ds:bsr/demo-rnaseq", "path": "counts.tsv"}}).json()
+    out = api.post("/api/tools/read_code_file", json={"arguments": {"resource_id": "ds:bsr/shared/demo-rnaseq", "path": "counts.tsv"}}).json()
     assert out["is_error"] and "summary" in out["content"][0]
 
 
