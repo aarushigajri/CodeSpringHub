@@ -1,0 +1,10 @@
+# Who BSR's Agent points people to for help. Shown at the end of every run plan, finished or failed
+# run, and BSR review request. Hand edits are fine; keep the structure.
+team: Bioinformatics Shared Resource (BSR)
+contacts:
+- name: James Rouse
+  email: rouse@cshl.edu
+- name: Aarushi Gajri
+  email: gajri@cshl.edu
+- name: Rad Utama
+  email: utama@cshl.edu

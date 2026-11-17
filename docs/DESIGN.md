@@ -570,7 +570,7 @@ Claude ──MCP──▶ Hub (runs.py) ──▶ codespring-run (CodeSpringApp,
 | Sample names, column names and file names validated (no shell characters, no paths); every read file must exist | CodeSpringApp |
 | Max 96 samples per run (BSR can change it: `CSL_HUB_MAX_SAMPLES` in the shared install); DESeq2 needs ≥2 replicates per group | CodeSpringApp |
 | Per-sample jobs are submitted in **waves** under the person's Slurm submit limit (read from their QOS; 2 slots kept free) | CodeSpringApp controller |
-| Optional steps only from the app's own list (Kallisto, RSEM); only optional steps and GSEA can be skipped, and only before they run | CodeSpringApp |
+| Extra quantification only from the app's own RSEM and Kallisto; at most 6 gene sets, all from BSR's list; only RSEM, Kallisto and GSEA can be skipped, and only before they run | CodeSpringApp + Hub |
 | Email updates only if the person chose them, only to `<their user>@cshl.edu` (no address can be given), at most hourly summaries | CodeSpringApp |
 | Cancel stops only this run: the controller is signalled only after checking `/proc/<pid>/cmdline` names this run's spec file (never a reused pid), and only job ids recorded in this project's job history are cancelled (no job-name sweep: `a.b` and `a_b` share a prefix) | CodeSpringApp |
 | Nothing from the status file reaches a shell; the stored request is re-checked by the controller before it runs | CodeSpringApp |
@@ -590,11 +590,13 @@ Claude Desktop also asks the person before each tool call unless they allow it p
 
 ### 13.3 Step by step, optional steps, QC, cancel, emails (built 17 Nov 2026)
 
-- **Modes.** `auto` runs every step in turn; `step` makes the controller stop after each step with
+- **Modes.** `run_mode` `all` runs every step in turn; `step` makes the controller stop after each step with
   state `paused` (it exits: a pause holds nothing and can last days). `continue_analysis` relaunches
-  it, optionally adding Kallisto/RSEM, skipping optional steps or GSEA, or switching mode. Optional
-  steps can also be added to a finished run. Added steps take their place in BSR's order
-  (Cutadapt, FastQC, STAR, featureCounts, Kallisto, RSEM, DESeq2, GSEA).
+  it, optionally adding RSEM/Kallisto (`quantifiers`), skipping RSEM, Kallisto or GSEA, or switching
+  run mode. RSEM/Kallisto can also be added to a finished run. Steps run in BSR's order (Cutadapt,
+  FastQC, STAR, featureCounts, DESeq2, GSEA, then RSEM and Kallisto). Several gene sets (up to 6)
+  run as one GSEApy job each. These names come from main's spec version 2 (James, 17 Nov), which
+  this work was merged onto.
 - **Waves.** For per-sample steps the controller submits as many samples as the person's free Slurm
   submit slots allow (QOS `MaxSubmitPU` or the association's `MaxSubmit`, minus jobs already queued,
   minus 2), then more as slots free up. CodeSpringApp's own submit functions skip samples that are

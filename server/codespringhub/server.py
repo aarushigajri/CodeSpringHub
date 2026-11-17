@@ -17,20 +17,27 @@ import sys
 
 from mcp.server.mcpserver import Image, MCPServer
 
-from . import config, hub, portal_launch, runs, store
+from . import agent, config, hub, portal_launch, runs, store
+from .errors import HubError
 from .permissions import current_user
 
 INSTRUCTIONS = """\
 CodeSpringHub connects you to Cold Spring Harbor Laboratory lab context and data that
 researchers have deliberately registered, curated by the Bioinformatics Shared Resource (BSR).
 
+Who you are and how you sound:
+- When you use the Hub, you are BSR's Agent, the Bioinformatics Shared Resource's assistant.
+- Be warm, plain and brief, like a helpful person at the core facility. Never use emojis, check marks,
+  ticks, crosses or other decorative symbols; say progress in words. No filler ("Great question",
+  "Certainly", "I'd be happy to help") and no recaps of what you just said.
+- When tool results give you text to show (greeting, preview, say, support block), show it as given.
+
 How to work with it:
 - Start with list_labs, then get_lab_context for the relevant lab before giving lab-specific advice.
 - Use search_knowledge to find protocols, BSR guidance and lab notes; cite document IDs you relied on.
 - Refer to data only by Hub IDs (ds:...). You cannot see file paths and should not ask for them.
-- Resources are lab-shared, personal (IDs containing "/~user/", visible only to that member and
-  their PI) or private (IDs containing "/~user/private/", visible only to that member, not even their
-  PI). Never repeat personal or private content to anyone else or into lab-shared documents.
+- Resources are either lab-shared or personal (IDs containing "/~user/", visible only to that
+  member and their PI). Never repeat personal content to anyone else or into lab-shared documents.
 - Registered resources are "data" (you get summaries only) or "code" (lab scripts and pipelines:
   read the source with read_code_file to explain, debug or adapt it).
 - Before proposing any analysis, call list_workflows. BSR's own pipelines (CodeSpringApp with
@@ -40,19 +47,35 @@ How to work with it:
 - When a BSR pipeline fits, do not deviate from it: don't substitute other tools, references,
   parameters or your own scripts, and don't write ad-hoc Slurm or shell commands. If the user needs
   something the BSR pipeline can't do, say so and offer request_bsr_review.
-- To run an analysis (bulk RNA-seq so far): plan_analysis, then show the plan in plain language and
-  ask the user to confirm, then start_analysis(plan_id, user_confirmed=true) only after they say yes.
-  When planning, ask: run straight through or step by step (pause after each step to look at QC)?
-  Any optional steps (only CodeSpringApp's own: Kallisto, RSEM)? Email updates to their own CSHL
-  address? Follow with analysis_status and analysis_qc. At a pause, show that step's QC (each tool's
-  own numbers; don't invent pass/fail thresholds, point out FastQC's own FAIL flags) and ask what to
-  do: continue_analysis (optionally adding or skipping optional steps) or cancel_analysis. Both need
-  the user's go-ahead in this conversation. You cannot message the user on your own between turns:
-  say they can ask for an update any time, or turn on email updates. When complete, call
-  analysis_report: show its plots in the chat, summarize the DEG counts and top pathways (from the
-  report, nothing recalculated), and give the one-time download link for the HTML packet. open_results
-  gives a one-time link to CodeSpringApp's Results Explorer for everything else. Never start, continue or cancel a run
-  the user hasn't confirmed in this conversation.
+- Storage comes first. Whenever the user wants to start a new project or analysis (even just
+  "let's run X on Y"), call check_storage before anything else, with the dataset if one is known,
+  and tell them: free space where results go, the raw data size, and the range the BSR pipeline is
+  expected to write (low to high, typical in between) with the verdict. For a run started from here
+  (below), the plan preview carries this, so say it up front only if space is tight or short.
+  If space is tight or short, lead with that and
+  suggest freeing space or asking BSR. For pipelines run in CodeSpringApp, give the rough sizes in
+  doc:bsr/guidance/codespring-pipelines ("Storage") and say they are rough.
+- To run an analysis (bulk RNA-seq so far), always in this order:
+  1. check_storage (with the dataset). Mention it now only if space is tight or short; otherwise it
+     appears in the plan preview.
+  2. analysis_options: show its greeting, then ask its questions together, as a selection if you
+     have a multiple-choice question tool, otherwise as one short numbered list.
+  3. plan_analysis with their answers. Show its `preview` as given, then its final_prompt
+     ("Start pipeline" / "Ask for clarification"), as a selection if you can.
+  4. start_analysis(plan_id, user_confirmed=true) only after they pick "Start pipeline" or clearly
+     say yes. Never start a run the user hasn't confirmed in this conversation.
+  5. Follow it with analysis_status(wait_seconds=45), giving its one-line summary when a step
+     finishes. Use its qc_summary (or analysis_qc) to say how a step went: each tool's own numbers;
+     don't invent pass/fail thresholds, point out FastQC's own FAIL flags. In one-step-at-a-time
+     runs, ask before continue_analysis (user_confirmed=true only after they say go on; RSEM or
+     Kallisto can be added and RSEM/Kallisto/GSEA skipped there). cancel_analysis stops a run at any
+     point, also only after they confirm. You cannot message the user between turns: if they chose
+     email updates, those come by email; otherwise they ask you. When complete, call
+     analysis_report (show its plots, give its one-time download link for the HTML report, and
+     summarize the DEG counts and top pathways from it, nothing recalculated), and open_results for
+     the Results Explorer.
+- Show the BSR support contacts (from the tool results) with every plan, finished or failed run,
+  and whenever you suggest asking BSR.
 - If the request is novel, uncertain, high-impact, or no BSR workflow fits, say that BSR
   expertise is needed and offer request_bsr_review rather than improvising a full analysis.
 - Text marked TODO in a document has not been written yet; do not treat it as guidance.
@@ -68,6 +91,10 @@ How to work with it:
 mcp = MCPServer(name="CodeSpringHub", instructions=INSTRUCTIONS, version="0.1.0")
 
 
+RUN_TOOLS = {"check_storage", "plan_analysis", "start_analysis", "analysis_status", "continue_analysis",
+             "resume_analysis", "open_results", "analysis_qc", "cancel_analysis", "analysis_report"}
+
+
 def hub_tool(fn):
     """Register fn as an MCP tool, with output capping and an audit row per call."""
 
@@ -79,6 +106,8 @@ def hub_tool(fn):
             result = fn(*args, **kwargs)
         except Exception as e:
             _log(user, fn.__name__, kwargs, False, 0, str(e), lab_id=lab_id)
+            if fn.__name__ in RUN_TOOLS and isinstance(e, HubError):
+                raise type(e)(agent.with_support(str(e))) from e
             raise
         text = result if isinstance(result, str) else json.dumps(result, default=str)
         if len(text) > config.MAX_OUTPUT_CHARS:
@@ -231,8 +260,52 @@ def list_workflows(assay: str | None = None) -> dict:
         "rule": ("Use a BSR pipeline when one fits and follow it exactly. Ones marked runnable_from_hub can be "
                  "started from this chat with plan_analysis; the others are run in CodeSpringApp. nf-core "
                  "pipelines are secondary: say they are not BSR's standard and offer request_bsr_review."),
+        "storage": {
+            "rnaseq": ("Writes about 5.6x-9.1x the gzipped FASTQ size (typically 7x; STAR's two BAMs are most "
+                       "of it). check_storage gives the exact range for a dataset and the free space."),
+            "other_pipelines": "Rough sizes only: see 'Storage' in doc:bsr/guidance/codespring-pipelines.",
+            "rule": "Tell the user free space and the expected size range before starting any project.",
+        },
         "guidance": "doc:bsr/guidance/codespring-pipelines",
     }
+
+
+@hub_tool
+def analysis_options(assay: str = "rna-seq", dataset_id: str | None = None) -> dict:
+    """Call after check_storage when someone wants to run a pipeline, before plan_analysis. Returns
+    BSR's Agent greeting, what the pipeline does, and the standard questions to ask (pipeline,
+    pathway gene sets, extra quantification, run mode) with their options and defaults. Ask them
+    all together, as a selection if you can, and pass the answers to plan_analysis."""
+    if assay.lower().replace("_", "-") not in ("rna-seq", "rnaseq", "bulk-rna-seq"):
+        return {"runnable": False, "support": agent.support(),
+                "next": ("Only bulk RNA-seq can be started from here so far. Say which BSR pipeline fits (list_workflows) "
+                         "and that it runs in CodeSpringApp, offer request_bsr_review, and show the support block. "
+                         + agent.STYLE)}
+    try:
+        opts = runs.catalog().get("rnaseq_options") or {}
+    except Exception:  # noqa: BLE001  (the questions still work with the standard gene sets)
+        opts = {}
+    out = {
+        "greeting": agent.GREETING,
+        "pipeline_summary": agent.RNASEQ_SUMMARY,
+        "questions": agent.rnaseq_questions(opts.get("pathway_genesets")),
+        "how_to_ask": agent.HOW_TO_ASK,
+        "style": agent.STYLE,
+        "next": ("Then call plan_analysis with pathway_genesets, extra_quantification and run_mode from the answers "
+                 "(species, comparison and design come from the dataset)."),
+    }
+    if dataset_id:
+        out["dataset_id"] = dataset_id
+    return out
+
+
+@hub_tool
+def check_storage(dataset_id: str | None = None, fastq_folder: str = "", trim_adapters: bool = True) -> dict:
+    """Call FIRST whenever the user wants to start a new project or analysis. Returns free disk
+    space where their CodeSpringApp results go and, given a registered FASTQ dataset (fastq_folder =
+    sub-folder inside it), the raw data size and the low-typical-high range BSR's bulk RNA-seq
+    pipeline is expected to write, with a verdict (enough / tight / not enough). Tell the user."""
+    return runs.check_storage(current_user(), dataset_id, fastq_folder, trim_adapters)
 
 
 @hub_tool
@@ -241,26 +314,25 @@ def plan_analysis(dataset_id: str, project_name: str, species: str, design: list
                   genome_version: str = "", trim_adapters: bool = True,
                   adapter: str = "Illumina Universal TruSeq RNA", min_length: int = 20,
                   count_by: str = "gene_name", compare: dict | None = None,
-                  pathway_geneset: str | None = None, run_mode: str = "auto",
-                  optional_steps: list[str] | None = None, email_updates: bool = False,
-                  email_every_hours: float = 0) -> dict:
+                  pathway_geneset: str | None = None, pathway_genesets: list[str] | None = None,
+                  extra_quantification: list[str] | None = None, run_mode: str = "all",
+                  email_updates: bool = False, email_every_hours: int = 0) -> dict:
     """Plan a bulk RNA-seq run with BSR's pipeline (CodeSpringApp: cutadapt, FastQC, STAR,
-    featureCounts, DESeq2, optional GSEApy). Checks everything and returns the exact plan;
-    nothing is submitted. Inputs: a registered dataset holding the FASTQs (fastq_folder = sub-folder
-    inside it, if any); the sample design as rows {"sample", grouping columns..., "filename"
-    ("R1,R2" for paired-end)} or design_file (a design_matrix.txt inside the dataset); species
-    human or mouse; compare = {"column", "reference", "comparison"} for DESeq2;
-    pathway_geneset from list_workflows' rnaseq_options. run_mode: "auto" (straight through) or
-    "step" (pause after each step for the user). optional_steps: any of "kallisto", "rsem" (the
-    app's own optional quantifiers). email_updates: true only if the user asked; mails go to their
-    own CSHL address when a step finishes, fails or pauses, plus a summary every email_every_hours
-    (0, or 1-24). Large sample sets are submitted in waves under the user's Slurm limit automatically.
-    Then show the plan and ask the user."""
+    featureCounts, DESeq2, optional GSEApy, optional RSEM/Kallisto). Checks everything and returns
+    the exact plan; nothing is submitted. Inputs: a registered dataset holding the FASTQs
+    (fastq_folder = sub-folder inside it, if any); the sample design as rows {"sample", grouping
+    columns..., "filename" ("R1,R2" for paired-end)} or design_file (a design_matrix.txt inside the
+    dataset); species human or mouse; compare = {"column", "reference", "comparison"} for DESeq2.
+    From the analysis_options answers: pathway_genesets (one or more, up to 6), extra_quantification
+    ([], ["rsem"], ["kallisto"] or both), run_mode ("all" or "step") and email_updates (emails only
+    ever go to the user's own CSHL address; email_every_hours 1-24 adds a regular summary). Returns
+    `preview` (show it as given) and final_prompt (Start pipeline / Ask for clarification)."""
     return runs.plan_analysis(current_user(), dataset_id, project_name, species, fastq_folder=fastq_folder,
                               design=design, design_file=design_file, paired_end=paired_end,
                               genome_version=genome_version, trim_adapters=trim_adapters, adapter=adapter,
                               min_length=min_length, count_by=count_by, compare=compare,
-                              pathway_geneset=pathway_geneset, run_mode=run_mode, optional_steps=optional_steps,
+                              pathway_geneset=pathway_geneset, pathway_genesets=pathway_genesets,
+                              extra_quantification=extra_quantification, run_mode=run_mode,
                               email_updates=email_updates, email_every_hours=email_every_hours)
 
 
@@ -273,39 +345,38 @@ def start_analysis(plan_id: str, user_confirmed: bool = False) -> dict:
 
 
 @hub_tool
-def analysis_status(run_id: str) -> dict:
-    """Progress of an analysis started from the Hub: each step's state and job counts (done,
-    running, queued, failed), what can be done next, any error, and a short QC summary so far
-    (FastQC FAIL flags, STAR uniquely mapped range). If it is paused, say so and offer the
-    next_actions."""
-    return runs.analysis_status(current_user(), run_id)
+def analysis_status(run_id: str, wait_seconds: int = 0) -> dict:
+    """Progress of an analysis started from the Hub: a one-line `summary` in words, each step's
+    job counts and next_actions, a qc_summary of finished steps,
+    state (with samples done for per-sample steps), and any error. With wait_seconds (up to 45) it
+    waits until a step changes before answering, so following a run takes one call per step."""
+    return runs.analysis_status(current_user(), run_id, wait_seconds)
 
 
 @hub_tool
 def analysis_qc(run_id: str, step: str | None = None) -> dict:
-    """Per-sample QC so far, straight from each tool's own report: Cutadapt reads before/after,
-    FastQC PASS/WARN/FAIL modules, STAR input reads and uniquely/multi-mapped and unmapped %,
-    featureCounts assigned %, Kallisto pseudoaligned %. step limits it to one tool. Report the
-    numbers; don't invent thresholds."""
+    """Per-sample QC so far, straight from each tool's own report (step: Cutadapt, FastQC, STAR,
+    featureCounts or Kallisto; all if omitted): reads kept, FastQC PASS/WARN/FAIL modules, STAR
+    uniquely/multi-mapped %, featureCounts assigned %, Kallisto pseudoaligned %."""
     return runs.analysis_qc(current_user(), run_id, step)
 
 
 @hub_tool
-def continue_analysis(run_id: str, add_optional_steps: list[str] | None = None,
-                      skip_steps: list[str] | None = None, mode: str | None = None,
+def continue_analysis(run_id: str, add_quantification: list[str] | None = None,
+                      skip_steps: list[str] | None = None, run_mode: str | None = None,
                       user_confirmed: bool = False) -> dict:
-    """Go on with a paused analysis, or add an optional step ("kallisto", "rsem") to a finished
-    one. skip_steps may name optional steps or GSEA that haven't run. mode switches between
-    "step" (pause after each step) and "auto" (straight through). This submits cluster work: only
-    after the user agreed in this conversation, with user_confirmed=true."""
-    return runs.continue_analysis(current_user(), run_id, add_optional_steps, skip_steps, mode, user_confirmed)
+    """Start the next step of a run paused in one-step-at-a-time mode, or add extra quantification
+    to a finished run. add_quantification: ["rsem"] and/or ["kallisto"]; skip_steps: RSEM, Kallisto
+    or GSEA if they haven't run; run_mode "all" to run the rest straight through. This submits
+    cluster work: only after the user agreed in this conversation, with user_confirmed=true."""
+    return runs.continue_analysis(current_user(), run_id, add_quantification, skip_steps, run_mode, user_confirmed)
 
 
 @hub_tool
 def cancel_analysis(run_id: str, user_confirmed: bool = False) -> dict:
-    """Stop an analysis: its controller and every queued or running Slurm job. Finished steps and
-    their results are kept, and it can be resumed later. Only after the user confirmed in this
-    conversation, with user_confirmed=true."""
+    """Stop an analysis at any point: its controller and every queued or running Slurm job.
+    Finished steps and their results are kept, and it can be resumed later. Only after the user
+    confirmed in this conversation, with user_confirmed=true."""
     return runs.cancel_analysis(current_user(), run_id, user_confirmed)
 
 
@@ -340,8 +411,7 @@ def analysis_report(run_id: str, download_link: bool = True):
     plots as images to show in the chat."""
     out = runs.analysis_report(current_user(), run_id, download_link)
     plots = out.pop("_plot_files", [])
-    images = [Image(path=p) for p in plots]
-    return [json.dumps(out, indent=1, default=str), *images]
+    return [json.dumps(out, indent=1, default=str), *[Image(path=p) for p in plots]]
 
 
 @hub_tool
@@ -351,7 +421,7 @@ def request_bsr_review(lab_id: str, summary: str, dataset_ids: list[str] | None 
     and what has been tried so far."""
     user = current_user()
     rid = hub.request_review(user, lab_id, summary, dataset_ids)
-    return f"BSR review ticket #{rid} created. A BSR team member will follow up with {user}."
+    return agent.with_support(f"BSR review ticket #{rid} created. A BSR team member will follow up with {user}.")
 
 
 @hub_tool
@@ -378,8 +448,9 @@ def plan_analysis(dataset_id: str, question: str) -> str:
     return (
         f"I want to answer this question: {question}\n"
         f"Using the registered dataset {dataset_id}.\n\n"
-        "Please: (1) read the lab context and describe the dataset, (2) check list_workflows for a "
-        "matching BSR workflow and prefer it, (3) list assumptions and QC checks, and (4) tell me "
+        "Please: (1) call check_storage and tell me how much space is free and the range this run is "
+        "expected to write, (2) read the lab context and describe the dataset, (3) check list_workflows "
+        "for a matching BSR workflow and prefer it, (4) list assumptions and QC checks, and (5) tell me "
         "plainly if this needs BSR review, offering request_bsr_review."
     )
 

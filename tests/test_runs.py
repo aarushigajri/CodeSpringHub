@@ -32,27 +32,30 @@ state = (here / "state").read_text().strip() if (here / "state").exists() else "
 def out(x, code=0):
     print(json.dumps(x)); sys.exit(code)
 if cmd == "catalog":
-    out({{"ok": True, "pipelines": [{{"id": "rnaseq", "runnable_from_hub": True}}, {{"id": "atac", "runnable_from_hub": False}}],
+    version = int((here / "spec_version").read_text()) if (here / "spec_version").exists() else 1
+    out({{"ok": True, "spec_version": version, "pipelines": [{{"id": "rnaseq", "runnable_from_hub": True}}, {{"id": "atac", "runnable_from_hub": False}}],
          "rnaseq": {{"references": [], "default_reference": {{}}, "adapters_r1": {{"Illumina Universal TruSeq RNA": "AGATC"}},
                     "features": ["gene_name"], "gsea_genesets": ["MSigDB_Hallmark_2020"], "limits": {{}}}}}})
 if cmd in ("check", "start"):
     if spec["project_name"] == "taken":
         out({{"ok": False, "errors": ["A results folder for 'taken' already exists."]}}, 2)
     plan = {{"pipeline": "rnaseq", "project_id": "rna/" + spec["project_name"], "results_dir": "/r/" + spec["project_name"],
-            "steps": [{{"step": "STAR"}}, {{"step": "DESeq2"}}], "codespringapp": "/x", "codespringlab": "/y"}}
+            "steps": [{{"step": "STAR"}}, {{"step": "DESeq2"}}] + ([{{"step": "GSEA"}}] if spec.get("gsea") else []),
+            "samples": ["c1", "c2"], "groups": {{"group": {{"x": 1, "y": 1}}}}, "reference": "Mouse GRCm39",
+            "codespringapp": "/x", "codespringlab": "/y"}}
     if cmd == "check":
         out({{"ok": True, "plan": plan}})
     out({{"ok": True, "project_id": plan["project_id"], "results_dir": plan["results_dir"]}})
 if cmd == "status":
+    if (here / "status.json").exists():
+        out({{"ok": True, **json.loads((here / "status.json").read_text())}})
     extra = {{"paused_after": "FastQC", "next_step": "STAR"}} if state == "paused" else {{}}
-    out({{"ok": True, "state": state, "mode": "step", "results_dir": "/r", "next_actions": ["continue: run STAR", "cancel"],
+    out({{"ok": True, "state": state, "results_dir": "/r", "next_actions": ["continue: run STAR", "cancel"],
          "steps": [{{"step": "FastQC", "state": "complete", "jobs": {{"done": 6, "running": 0, "queued": 0, "failed": 0}}}},
                    {{"step": "STAR", "state": "waiting"}}], **extra}})
 if cmd == "qc":
     out({{"ok": True, "samples": [{{"sample": "c1", "star": {{"uniquely_mapped_pct": 91.5}}}}],
          "summary": {{"star": {{"uniquely_mapped": "91.5% to 91.5%"}}}}, "note": "tool numbers"}})
-if cmd == "continue":
-    out({{"ok": True, "steps": [{{"step": "STAR", "state": "waiting"}}, {{"step": "Kallisto", "state": "waiting"}}]}})
 if cmd == "cancel":
     out({{"ok": True, "state": "cancelled", "controller": "stopped", "jobs": ["Requested cancellation of 2 active STAR jobs"],
          "note": "Finished steps are kept."}})
@@ -68,6 +71,8 @@ if cmd == "report":
          "deg_summary": {{"t_vs_c": {{"significant": 55, "up": 27, "down": 28}}}}, "gsea_top": {{}}, "qc_summary": {{}}, "note": "n"}})
 if cmd == "resume":
     out({{"ok": True, "resumed": True}})
+if cmd == "continue":
+    out({{"ok": True, "continued": True, "next_step": "STAR"}})
 out({{"ok": False, "errors": "unknown"}}, 2)
 '''
 
@@ -269,16 +274,191 @@ def test_a_personal_codespringapp_is_not_closed_to_open_results(suite, monkeypat
     assert out["link"] is None and "exp1" in out["how_to_open"] and "Results Explorer" in out["how_to_open"]
 
 
-# ---- step by step, optional steps, email, QC, cancel ------------------------------------------------
+# ---- storage --------------------------------------------------------------------------------------
 
-def test_plan_passes_mode_optional_steps_and_email_choice(suite):
-    plan(run_mode="step", optional_steps=["Kallisto", "rsem"], email_updates=True, email_every_hours=6)
-    spec = calls(suite)[0]["spec"]
-    assert spec["mode"] == "step" and spec["optional"] == ["kallisto", "rsem"]
+def test_storage_estimate_is_a_range_around_the_measured_run():
+    from codespringhub import storage
+    gb = 1024**3
+    est = storage.estimate_rnaseq(50 * gb)
+    assert est["low_bytes"] < est["typical_bytes"] < est["high_bytes"]
+    assert 6.9 * 50 * gb < est["typical_bytes"] < 7.2 * 50 * gb  # ~7x the gzipped FASTQs
+    assert est["recommended_free"] == storage.human(est["high_bytes"]) and " to " in est["range"]
+    assert storage.estimate_rnaseq(gb, trim=False)["typical_bytes"] < storage.estimate_rnaseq(gb)["typical_bytes"]
+
+
+def test_only_the_fastqs_the_design_names_are_sized(tmp_path):
+    from codespringhub import storage
+    tmp_path = tmp_path / "fq"  # (tmp_path itself also holds the test Hub)
+    tmp_path.mkdir()
+    (tmp_path / "a_R1.fastq.gz").write_bytes(b"x" * 1000)
+    (tmp_path / "a_R2.fastq.gz").write_bytes(b"x" * 1000)
+    (tmp_path / "other.fastq.gz").write_bytes(b"x" * 5000)
+    (tmp_path / "plain.fastq").write_bytes(b"x" * 4000)  # counted as ~1/4 (its gzipped size)
+    (tmp_path / "notes.txt").write_bytes(b"x" * 9999)
+    assert storage.raw_fastq_bytes(tmp_path, ["a_R1.fastq.gz,a_R2.fastq.gz"]) == (2000, 2)
+    assert storage.raw_fastq_bytes(tmp_path) == (8000, 4)
+
+
+def test_check_storage_reports_free_space_and_the_range(suite):
+    out = runs.check_storage(USER, "ds:lab-a/reads", "fastq")
+    assert out["free"] and out["results_location"]
+    assert out["raw_input"]["fastq_files"] == 1 and " to " in out["rnaseq_estimate"]["range"]
+    assert out["verdict"] == "enough space" and "free" in out["next"]
+    assert "rnaseq_estimate" not in runs.check_storage(USER)  # no dataset: free space only
+    with pytest.raises(HubError, match="code"):
+        runs.check_storage(USER, "ds:lab-a/scripts")
+    with pytest.raises(Forbidden):
+        runs.check_storage("ann")
+
+
+def test_the_plan_leads_with_storage_and_a_run_that_cannot_fit_is_refused(suite, monkeypatch):
+    p = plan()
+    st = p["plan"]["storage"]
+    assert st["raw_input"]["fastq_files"] == 1 and "rnaseq_estimate" in st
+    assert "Storage" in p["preview"] and "free" in p["preview"] and "/r/exp1" in p["preview"]
+    from codespringhub import storage
+    monkeypatch.setattr(storage, "free_space", lambda where: {"free_bytes": 10, "free": "10 B"})
+    with pytest.raises(HubError, match="Not started"):
+        runs.start_analysis(USER, p["plan_id"], user_confirmed=True)
+    assert "start" not in [c["cmd"] for c in calls(suite)]
+
+
+def test_claude_is_told_to_talk_about_storage_first():
+    from codespringhub import server
+    assert "check_storage before anything else" in server.INSTRUCTIONS
+    assert server.INSTRUCTIONS.index("1. check_storage") < server.INSTRUCTIONS.index("2. analysis_options")
+    from test_server import call
+    assert "free" in call("check_storage")
+
+
+# ---- BSR's Agent: questions, preview, progress ------------------------------------------------------
+
+EMOJI_OR_TICKS = set("\u2705\u2714\u2713\u274c\u2716\u23f3\u2b1c\u23f8\U0001f389\U0001f44d")
+
+
+def _no_symbols(text):
+    return not any(ch in EMOJI_OR_TICKS or ord(ch) >= 0x1F000 for ch in text)
+
+
+def test_analysis_options_asks_the_standard_questions(suite):
+    from test_server import call
+    opts = call("analysis_options")
+    assert opts["greeting"].startswith("Hello! This is BSR's Agent.")
+    q = {x["id"]: x for x in opts["questions"]}
+    assert list(q) == ["pipeline", "pathway_genesets", "extra_quantification", "run_mode", "email_updates"]
+    assert q["email_updates"]["default"] is False and "own CSHL address" in json.dumps(q["email_updates"])
+    assert q["pathway_genesets"]["multi_select"] and not q["extra_quantification"]["multi_select"]
+    assert q["extra_quantification"]["options"][0]["label"] == "None, skip this"
+    assert q["extra_quantification"]["options"][0]["value"] == []
+    assert "selection" in opts["how_to_ask"]
+    assert _no_symbols(json.dumps(opts, ensure_ascii=False))
+
+
+def test_preview_is_short_with_full_output_path_and_bsr_support(suite):
+    p = plan()
+    preview = p["preview"]
+    assert preview.startswith("### Your RNA-seq plan")
+    for row in ("**Data**", "**Comparison**", "**Steps**", "**Run mode**", "**Storage**", "**Output**"):
+        assert row in preview
+    assert "`/r/exp1`" in preview and "y vs x" in preview and "2 mouse samples (1 x, 1 y)" in preview
+    assert "Need help? Contact BSR support" in preview
+    for who in ("James Rouse", "rouse@cshl.edu", "Aarushi Gajri", "gajri@cshl.edu", "Rad Utama", "utama@cshl.edu"):
+        assert who in preview
+    assert [o["label"] for o in p["final_prompt"]["options"]] == ["Start pipeline", "Ask for clarification"]
+    assert _no_symbols(preview) and _no_symbols(p["next"])
+
+
+def test_new_options_need_the_updated_codespringapp(suite):
+    with pytest.raises(HubError, match="CodeSpringApp update"):
+        plan(pathway_genesets=["MSigDB_Hallmark_2020", "Reactome_Pathways_2024"])
+    with pytest.raises(HubError, match="CodeSpringApp update"):
+        plan(extra_quantification=["rsem"])
+    with pytest.raises(HubError, match="CodeSpringApp update"):
+        plan(run_mode="step")
+    p = plan(pathway_genesets=["MSigDB_Hallmark_2020"], extra_quantification=["none"])  # works on any version
+    assert calls(suite)[-1]["spec"]["gsea"] == {"geneset": "MSigDB_Hallmark_2020"}
+    assert "quantifiers" not in calls(suite)[-1]["spec"] and "run_mode" not in calls(suite)[-1]["spec"]
+
+
+def test_several_gene_sets_quantifiers_and_step_mode_reach_codespringapp(suite):
+    (suite / "CodeSpringApp" / "bin" / "spec_version").write_text("2")
+    p = plan(pathway_genesets=["MSigDB_Hallmark_2020", "Reactome_Pathways_2024"], extra_quantification=["rsem", "kallisto"],
+             run_mode="step")
+    spec = [c for c in calls(suite) if c["cmd"] == "check"][-1]["spec"]
+    assert spec["gsea"] == {"genesets": ["MSigDB_Hallmark_2020", "Reactome_Pathways_2024"]}
+    assert spec["quantifiers"] == ["rsem", "kallisto"] and spec["run_mode"] == "step"
+    assert "Hallmark 2020, Reactome Pathways 2024" in p["preview"] and "One step at a time" in p["preview"]
+    started = runs.start_analysis(USER, p["plan_id"], user_confirmed=True)
+    assert "stop after each step" in started["say"]
+    with pytest.raises(HubError, match="at most 6"):
+        plan(name="many", pathway_genesets=[f"set{i}" for i in range(7)])
+    with pytest.raises(HubError, match="rsem and/or kallisto"):
+        plan(name="salmon", extra_quantification=["salmon"])
+    with pytest.raises(HubError, match="run_mode"):
+        plan(name="fast", run_mode="fast")
+
+
+def _start(suite, name="exp1"):
+    p = plan(name)
+    return runs.start_analysis(USER, p["plan_id"], user_confirmed=True)["run_id"]
+
+
+def test_progress_is_one_line_in_words_and_paused_runs_continue(suite):
+    run_id = _start(suite)
+    status = suite / "CodeSpringApp" / "bin" / "status.json"
+    status.write_text(json.dumps({"state": "running", "results_dir": "/r/exp1", "steps": [
+        {"step": "Cutadapt", "state": "complete"}, {"step": "FastQC", "state": "running", "samples_done": 4, "samples_total": 6},
+        {"step": "STAR", "state": "waiting"}]}))
+    st = runs.analysis_status(USER, run_id)
+    assert st["summary"] == "Done: trimming. Running: quality check (4 of 6 samples). Still to come: alignment."
+    assert _no_symbols(json.dumps(st, ensure_ascii=False))
+    status.write_text(json.dumps({"state": "paused", "paused_after": "FastQC", "results_dir": "/r/exp1", "steps": [
+        {"step": "Cutadapt", "state": "complete"}, {"step": "FastQC", "state": "complete"}, {"step": "STAR", "state": "waiting"}]}))
+    st = runs.analysis_status(USER, run_id)
+    assert st["say"].startswith("Quality check is finished.") and "continue_analysis" in st["next"]
+    with pytest.raises(HubError, match="confirm"):
+        runs.continue_analysis(USER, run_id)
+    cont = runs.continue_analysis(USER, run_id, user_confirmed=True)
+    assert cont["continued"] and cont["say"] == "Going on with alignment. I'll let you know when it's finished."
+    status.write_text(json.dumps({"state": "failed", "error": "STAR ran out of memory", "results_dir": "/r/exp1",
+                                  "steps": [{"step": "STAR", "state": "failed"}]}))
+    assert "Need help? Contact BSR support" in runs.analysis_status(USER, run_id)["say"]
+
+
+def test_waiting_for_progress_returns_when_a_step_changes(suite, tmp_path):
+    run_id = _start(suite)
+    results = tmp_path / "res"
+    (results / "log").mkdir(parents=True)
+    run_file = results / "log" / "codespring_hub_run.json"
+    run_file.write_text(json.dumps({"state": "running", "steps": [{"step": "STAR", "state": "running"}]}))
+    (suite / "CodeSpringApp" / "bin" / "status.json").write_text(json.dumps(
+        {"state": "running", "results_dir": str(results), "steps": [{"step": "STAR", "state": "running"}]}))
+    import threading
+    threading.Timer(1.0, lambda: run_file.write_text(json.dumps(
+        {"state": "running", "steps": [{"step": "STAR", "state": "complete"}]}))).start()
+    t0 = time.time()
+    runs.analysis_status(USER, run_id, wait_seconds=45)
+    assert time.time() - t0 < 15  # returned on the change, not after the full wait
+
+
+def test_run_tool_errors_and_review_requests_point_to_bsr_support(suite):
+    from test_server import call
+    out = call("start_analysis", plan_id="plan-0000000000000000", user_confirmed=True)["error"]
+    assert "No such plan" in out and "Need help? Contact BSR support" in out
+    assert "rouse@cshl.edu" in str(call("request_bsr_review", lab_id="lab-a", summary="question"))
+
+
+# ---- emails, QC, cancel, limits ------------------------------------------------------------------
+
+def test_email_updates_are_asked_and_go_only_to_the_person(suite):
+    with pytest.raises(HubError, match="CodeSpringApp update"):
+        plan(email_updates=True)
+    (suite / "CodeSpringApp" / "bin" / "spec_version").write_text("2")
+    plan(email_updates=True, email_every_hours=6)
+    spec = [c for c in calls(suite) if c["cmd"] == "check"][-1]["spec"]
     assert spec["notify"] == {"email": True, "every_hours": 6}  # no address: the runner only mails the person
     plan("e2")
-    spec = calls(suite)[1]["spec"]
-    assert spec["mode"] == "auto" and "notify" not in spec and "optional" not in spec
+    assert "notify" not in [c for c in calls(suite) if c["cmd"] == "check"][-1]["spec"]
 
 
 def test_status_shows_pauses_job_counts_and_qc(suite):
@@ -288,6 +468,7 @@ def test_status_shows_pauses_job_counts_and_qc(suite):
     assert st["state"] == "paused" and st["next_step"] == "STAR" and "cancel" in st["next_actions"]
     assert st["steps"][0]["jobs"] == {"done": 6, "running": 0, "queued": 0, "failed": 0}
     assert st["qc_summary"]["star"]["uniquely_mapped"].startswith("91.5")
+    assert "FAIL" in st["next"] and "user_confirmed=true" in st["next"]
     qc = runs.analysis_qc(USER, "rna/exp1", "STAR")
     assert qc["samples"][0]["star"]["uniquely_mapped_pct"] == 91.5
     assert [c["args"] for c in calls(suite) if c["cmd"] == "qc"][-1] == ["rna/exp1", "STAR"]
@@ -298,18 +479,20 @@ def test_status_shows_pauses_job_counts_and_qc(suite):
 def test_continuing_and_cancelling_need_the_users_go_ahead(suite):
     runs.start_analysis(USER, plan()["plan_id"], user_confirmed=True)
     with pytest.raises(HubError, match="confirm"):
-        runs.continue_analysis(USER, "rna/exp1", add_optional_steps=["kallisto"])
+        runs.continue_analysis(USER, "rna/exp1", add_quantification=["kallisto"])
     with pytest.raises(HubError, match="confirm"):
         runs.cancel_analysis(USER, "rna/exp1")
     assert not [c for c in calls(suite) if c["cmd"] in ("continue", "cancel")]
-    with pytest.raises(HubError, match="Optional steps are"):
-        runs.continue_analysis(USER, "rna/exp1", add_optional_steps=["salmon"], user_confirmed=True)
-    with pytest.raises(HubError, match="mode must be"):
-        runs.continue_analysis(USER, "rna/exp1", mode="turbo", user_confirmed=True)
-    out = runs.continue_analysis(USER, "rna/exp1", add_optional_steps=["Kallisto"], skip_steps=["GSEA"], mode="auto",
+    with pytest.raises(HubError, match="rsem and/or kallisto"):
+        runs.continue_analysis(USER, "rna/exp1", add_quantification=["salmon"], user_confirmed=True)
+    with pytest.raises(HubError, match="run_mode"):
+        runs.continue_analysis(USER, "rna/exp1", run_mode="turbo", user_confirmed=True)
+    with pytest.raises(HubError, match="can be skipped"):
+        runs.continue_analysis(USER, "rna/exp1", skip_steps=["STAR"], user_confirmed=True)
+    out = runs.continue_analysis(USER, "rna/exp1", add_quantification=["Kallisto"], skip_steps=["GSEA"], run_mode="all",
                                  user_confirmed=True)
     assert out["continued"] and [c["args"] for c in calls(suite) if c["cmd"] == "continue"][-1] == \
-        ["rna/exp1", "--add", "kallisto", "--skip", "GSEA", "--mode", "auto"]
+        ["rna/exp1", "--add", "kallisto", "--skip", "GSEA", "--mode", "all"]
     cx = runs.cancel_analysis(USER, "rna/exp1", user_confirmed=True)
     assert cx["state"] == "cancelled" and "STAR" in cx["jobs"][0]
     assert [r["state"] for r in runs.list_analyses(USER)] == ["cancelled"]
@@ -344,6 +527,15 @@ def test_resuming_needs_go_ahead_and_continuing_respects_the_run_limit(suite, mo
         runs.continue_analysis(USER, "rna/e1", user_confirmed=True)
     with pytest.raises(HubError, match="limit"):
         runs.resume_analysis(USER, "rna/e1", user_confirmed=True)
+
+
+def test_cancelled_runs_say_so_in_words(suite):
+    run_id = _start(suite)
+    (suite / "CodeSpringApp" / "bin" / "status.json").write_text(json.dumps({"state": "cancelled", "results_dir": "/r/exp1",
+        "steps": [{"step": "Cutadapt", "state": "complete"}, {"step": "STAR", "state": "cancelled"}, {"step": "GSEA", "state": "skipped"}]}))
+    st = runs.analysis_status(USER, run_id)
+    assert st["say"].startswith("The run is cancelled.") and "STAR" not in st["summary"]
+    assert st["summary"] == "Done: trimming. Stopped with a problem: alignment (cancelled)."
 
 
 # ---- the post-run report packet ---------------------------------------------------------------
