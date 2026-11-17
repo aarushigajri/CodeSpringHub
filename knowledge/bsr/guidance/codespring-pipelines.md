@@ -37,7 +37,28 @@ Results go to the person's own CodeSpringApp results folder (`~/csl_results/<pro
    and others). Mouse genes are mapped to human orthologs.
 8. **Results Explorer** (CodeSpringApp): QC, counts, PCA, volcano, heatmaps, GSEA, files.
 
-Optional in CodeSpringApp only: RSEM and Kallisto quantification.
+Optional (the app's own, run exactly as the app runs them): **Kallisto** transcript abundance (TPM)
+from the same reads, and **RSEM** gene/transcript quantification from STAR's transcriptome
+alignments. From Claude they can be chosen when planning, added at any pause, or added after the
+run finishes.
+
+## Running from Claude, step by step
+
+- **Two ways to run**: straight through, or **step by step** (pauses after each step so the
+  researcher can look at that step's QC and decide: continue, add or skip an optional step, switch
+  to straight through, or cancel). Ask which they want when planning.
+- **QC while it runs**: Cutadapt reads before/after, FastQC's own PASS/WARN/FAIL per module, STAR
+  input reads and uniquely mapped / multi-mapped / unmapped %, featureCounts assigned %, Kallisto
+  pseudoaligned %. Report the numbers; BSR hasn't set pass/fail cut-offs, so don't invent any.
+  FastQC's FAIL flags are FastQC's judgement, and some (e.g. per-base sequence content, duplication)
+  are normal for RNA-seq: say so, and suggest BSR if the researcher is unsure.
+- **Updates**: Claude can't message anyone between turns. The researcher can ask for an update
+  any time, or turn on **email updates** when planning: to their own CSHL address only, when a step
+  finishes, fails or pauses, plus an optional summary every 1-24 hours.
+- **Cancel** stops the run's controller and every queued or running Slurm job; finished steps are
+  kept and the run can be resumed.
+- **Larger studies**: per-sample jobs are submitted in waves that stay under the person's Slurm job
+  limit (16 at once on the default QOS), so a 40-sample run doesn't fail at submission.
 
 **References**: human GRCh38 / GENCODE v50 (default) or v42 (legacy); mouse GRCm39 / GENCODE M39
 (default) or M29 (legacy). Maize references exist for RNA-seq in the app.
@@ -48,12 +69,16 @@ Optional in CodeSpringApp only: RSEM and Kallisto quantification.
   nobody tunes them per run. If a step runs out of memory or time, that's a question for BSR.
 - Starting from Claude, the run is identical to clicking through CodeSpringApp, and the project
   appears in their CodeSpringApp project list.
+- When a run finishes they get a report packet: one HTML file with the app's plots (PCA, volcano,
+  MA, GSEA dot plots), the QC table, DEG counts and lists, and methods text, all downloadable from
+  the page. Big files (count matrices, BAMs) stay on the cluster; the report lists where.
 - The small example dataset (`ds:bsr/codespringlab-rnaseq-example`: 6 mouse samples, control vs
   treated) finishes in roughly 10-20 minutes and is the best first try.
 
 ## Known limitations (November 2026)
 
 - From Claude, only bulk RNA-seq can be started so far; other analyses run in CodeSpringApp.
+- The post-run report packet (HTML with plots and small data files) is still being built.
 - In CodeSpringLab's notebooks, ATAC single-end peak calling and ChIP HOMER annotation are broken;
   CodeSpringApp's versions are the ones to use.
 - Results from GSEApy for mouse depend on ortholog mapping; mention this when interpreting.

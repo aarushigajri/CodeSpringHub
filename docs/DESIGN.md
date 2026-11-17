@@ -568,7 +568,16 @@ Claude ──MCP──▶ Hub (runs.py) ──▶ codespring-run (CodeSpringApp,
 | Only BSR pipelines, references, adapter presets, gene sets and options; no custom commands, runner paths, adapters or result folders | `codespring-run check` (CodeSpringApp) |
 | Results only in the person's CodeSpringApp results root; an existing results folder is never cleared | CodeSpringApp |
 | Sample names, column names and file names validated (no shell characters, no paths); every read file must exist | CodeSpringApp |
-| Max 96 samples per run; DESeq2 needs ≥2 replicates per group | CodeSpringApp |
+| Max 96 samples per run (BSR can change it: `CSL_HUB_MAX_SAMPLES` in the shared install); DESeq2 needs ≥2 replicates per group | CodeSpringApp |
+| Per-sample jobs are submitted in **waves** under the person's Slurm submit limit (read from their QOS; 2 slots kept free) | CodeSpringApp controller |
+| Optional steps only from the app's own list (Kallisto, RSEM); only optional steps and GSEA can be skipped, and only before they run | CodeSpringApp |
+| Email updates only if the person chose them, only to `<their user>@cshl.edu` (no address can be given), at most hourly summaries | CodeSpringApp |
+| Cancel stops only this run: the controller is signalled only after checking `/proc/<pid>/cmdline` names this run's spec file (never a reused pid), and only job ids recorded in this project's job history are cancelled (no job-name sweep: `a.b` and `a_b` share a prefix) | CodeSpringApp |
+| Nothing from the status file reaches a shell; the stored request is re-checked by the controller before it runs | CodeSpringApp |
+| Waves fail closed: if `squeue` can't be asked, nothing is submitted; after 12 h without free slots, or an hour without a readable job list, the run stops with a message (resume later) | CodeSpringApp controller |
+| Starting, continuing and resuming all count against the 3-runs limit; a run on another login node being cancelled shows `cancelling` until its controller stops | Hub + CodeSpringApp |
+| Continuing and resuming (submit more work) and cancelling need the person's go-ahead in the chat (`user_confirmed`), like starting | Hub |
+| Paused runs don't count towards the 3-runs limit (they hold no cluster resources) | Hub |
 | Inputs must be Hub-registered **data** the person can see (lab-shared, or their own personal); files can't escape the dataset | Hub |
 | Nothing runs without a plan the user saw and confirmed; plans are single-use, expire after 2 h, are tamper-checked, and belong to one person | Hub |
 | A run can only start under the account of the person asking | Hub |
@@ -579,16 +588,63 @@ Claude ──MCP──▶ Hub (runs.py) ──▶ codespring-run (CodeSpringApp,
 
 Claude Desktop also asks the person before each tool call unless they allow it permanently.
 
-### 13.3 Updating the shared install
+### 13.3 Step by step, optional steps, QC, cancel, emails (built 17 Nov 2026)
+
+- **Modes.** `auto` runs every step in turn; `step` makes the controller stop after each step with
+  state `paused` (it exits: a pause holds nothing and can last days). `continue_analysis` relaunches
+  it, optionally adding Kallisto/RSEM, skipping optional steps or GSEA, or switching mode. Optional
+  steps can also be added to a finished run. Added steps take their place in BSR's order
+  (Cutadapt, FastQC, STAR, featureCounts, Kallisto, RSEM, DESeq2, GSEA).
+- **Waves.** For per-sample steps the controller submits as many samples as the person's free Slurm
+  submit slots allow (QOS `MaxSubmitPU` or the association's `MaxSubmit`, minus jobs already queued,
+  minus 2), then more as slots free up. CodeSpringApp's own submit functions skip samples that are
+  done or already queued, so a wave never duplicates work. A matrix-build job held back while earlier
+  waves were still running is submitted by one finishing pass once every sample is done.
+- **QC** (`codespring-run qc`, `analysis_qc`) reads each tool's own output: Cutadapt and featureCounts
+  through the app's metric readers, STAR's `Log.final.out`, FastQC's `summary.txt` inside each report
+  zip, Kallisto's `run_info.json`. No thresholds are applied (BSR to decide; see §14).
+- **Cancel** writes a cancel flag (a controller on another node stops at its next check and marks
+  the run `cancelled`; until then it shows `cancelling`), stops a local controller's process group
+  after verifying it really is this run's controller, and cancels each step's recorded active jobs
+  with the app's `cancel_active_step_jobs`. Every controller exit clears its pid. `resume` carries on.
+- **Reviewed** 17 Nov 2026 by an independent review pass: stale-pid kills, the job-name-prefix
+  sweep, shell injection via the status file, double controllers after a remote cancel, the run
+  limit being bypassable through continue/resume, and waves that could wait forever were all found
+  and fixed, with tests.
+- **Emails** (optional) are sent by the controller with the cluster's `mail` to the person's own
+  address: when a step finishes, fails or pauses, when the run ends or is cancelled, and optionally
+  a summary every N hours. Claude itself can't send updates between turns.
+
+### 13.4 The post-run report packet (built 17 Nov 2026)
+
+- `codespring-run report` (CodeSpringApp `R/hub_report.R`) writes one self-contained HTML page to
+  `<results>/report/<project>_codespring_report.html`. The controller makes it when a run finishes
+  (and the "finished" email gives its path); `analysis_report` rebuilds it on request, also mid-run.
+- It only gathers CodeSpringApp's own outputs, recalculating nothing: steps, a per-sample QC table
+  (the same numbers as `analysis_qc`), the DESeq2 step's PNGs (PCA, volcano, MA), DEG counts and
+  top genes from DESeq2's FDR < 0.05 list, GSEApy's top pathways and dot plots, and the app's
+  methods text and tool table.
+- Plots and small files (DEG lists, design, GSEA tables, normalized counts, featureCounts summary,
+  QC CSV) are embedded as downloads. Size caps: 5 MB per data file, 15 MB per page, 30 plots
+  (`CSL_HUB_REPORT_FILE_MB`, `CSL_HUB_REPORT_MAX_MB`). Anything bigger (count/Kallisto/RSEM matrices)
+  is listed with its cluster path. All text from result files is HTML-escaped; the page loads
+  nothing from the internet.
+- In the chat, `analysis_report` returns a summary, up to 6 of the plots as images, and a
+  **one-time download link** for the HTML served by the person's own portal
+  (`/api/download/<ticket>`: the ticket file, in their 700 `~/.codespringhub/download-tickets/`,
+  names the file; it works once, expires with other links, and only `*_codespring_report.html`
+  files are ever served). `open_results` remains the way into the full, interactive results.
+
+### 13.5 Updating the shared install
 
 BSR updates `CodeSpringSuite` deliberately, after tests pass (`tests/run_all.sh` in CodeSpringApp;
 `pytest` here). During development it was synced from the `feature/hub-bridge` worktree; once James
 merges the branch, replace it with clones pinned to a commit of each repository.
 
-### 13.4 Not yet
+### 13.6 Not yet
 
 - ATAC, ChIP, CUT&RUN, single-cell, Sarek and FetchNGS still start from CodeSpringApp only.
-- A run started from Claude is followed with `analysis_status`; there's no notification yet.
+- The report packet isn't linked from CodeSpringApp's own Results Explorer yet.
 - The controller lives on the login node it was started on (`bamdev1`), like the app's own.
 
 ---
@@ -611,3 +667,5 @@ merges the branch, replace it with clones pinned to a commit of each repository.
 | 10 | Git remote: personal GitHub vs. CSHL/BSR organization | Aarushi | now |
 | 13 | James reviews and merges CodeSpringApp `feature/hub-bridge`; then pin the shared install to that commit | James + BSR | before onboarding |
 | 14 | HPC admins OK with small Hub run controllers on the login node (same pattern as CodeSpringApp's Sarek) | BSR + HPC admins | before onboarding |
+| 15 | QC cut-offs to flag in chat (e.g. STAR uniquely mapped %), if any; today only tools' own numbers and FastQC's flags are shown | BSR | before pilot |
+| 16 | Largest run from Claude (now 96 samples, batched) | BSR | before pilot |

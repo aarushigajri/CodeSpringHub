@@ -10,7 +10,9 @@ The Hub adds the guardrails that depend on who is asking:
   * nothing runs without a plan that the person has seen and confirmed (plan -> confirm -> start);
   * a plan is single-use, expires, belongs to one person and can't be changed after it is shown;
   * a run can only be started by the person whose account it will run under;
-  * a limited number of Hub-started runs per person at once;
+  * a limited number of Hub-started runs per person at once (paused runs don't count: they use nothing);
+  * continuing (which submits more work) and cancelling also need the person's go-ahead in the chat;
+  * QC shown in the chat is each tool's own numbers; judging them is the researcher's call;
   * results open through a one-time link, so the app's long-lived access token never enters a chat.
 """
 
@@ -28,14 +30,16 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config, store
+from . import config, identity, portal_launch, store
 from .errors import Forbidden, HubError, NotFound
 from .hub import get_dataset
 from .permissions import resolve_asset
 
 PLAN_ID = re.compile(r"^plan-[a-f0-9]{16}$")
 RUN_ID = re.compile(r"^rna/[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
-FINISHED = {"complete", "failed", "stopped"}
+FINISHED = {"complete", "failed", "stopped", "cancelled"}
+ACTIVE = {"queued", "running"}  # "paused" waits for the person and holds no cluster resources
+OPTIONAL_STEPS = ("kallisto", "rsem")
 
 
 # ---- talking to CodeSpringApp ------------------------------------------------------------------
@@ -102,6 +106,10 @@ def catalog() -> dict:
             "adapters": list(cat["rnaseq"]["adapters_r1"]),
             "features": cat["rnaseq"]["features"],
             "pathway_genesets": cat["rnaseq"]["gsea_genesets"],
+            "optional_steps": cat["rnaseq"].get("optional_steps", []),
+            "run_modes": cat["rnaseq"].get("modes", {}),
+            "email_updates": cat["rnaseq"].get("notify", {}),
+            "batching": cat["rnaseq"].get("batching", {}),
             "limits": cat["rnaseq"]["limits"],
         },
     }
@@ -125,7 +133,8 @@ def _design_spec(dataset_path: Path, design, design_file):
 
 def plan_analysis(user, dataset_id, project_name, species, fastq_folder="", design=None, design_file="",
                   paired_end=True, genome_version="", trim_adapters=True, adapter="Illumina Universal TruSeq RNA",
-                  min_length=20, count_by="gene_name", compare=None, pathway_geneset=None) -> dict:
+                  min_length=20, count_by="gene_name", compare=None, pathway_geneset=None,
+                  run_mode="auto", optional_steps=None, email_updates=False, email_every_hours=0) -> dict:
     _require_self(user)
     ds = get_dataset(user, dataset_id)
     if ds.kind != "data":
@@ -153,6 +162,11 @@ def plan_analysis(user, dataset_id, project_name, species, fastq_folder="", desi
                           "comparison": compare.get("comparison", "")}
     if pathway_geneset:
         spec["gsea"] = {"geneset": pathway_geneset}
+    spec["mode"] = run_mode or "auto"
+    if optional_steps:
+        spec["optional"] = [str(x).lower() for x in optional_steps]
+    if email_updates:
+        spec["notify"] = {"email": True, "every_hours": email_every_hours or 0}
     plan = _cli("check", spec=spec)["plan"]
     plan.pop("codespringapp", None)
     plan.pop("codespringlab", None)
@@ -170,8 +184,11 @@ def plan_analysis(user, dataset_id, project_name, species, fastq_folder="", desi
         "expires_in_minutes": config.RUN_PLAN_TTL_SECONDS // 60,
         "plan": plan,
         "next": ("Show this plan to the user in plain language (samples and groups, reference, each step, the "
-                 "comparison, where results go, and that it runs on Slurm under their account). Ask them to "
-                 "confirm. Only after they say yes, call start_analysis with this plan_id and user_confirmed=true."),
+                 "comparison, where results go, and that it runs on Slurm under their account). Also say whether "
+                 "it runs straight through or pauses after each step, which optional steps are included or can be "
+                 "added later, and whether email updates are on (ask if they want them; they go only to the "
+                 "user's own CSHL address). Ask them to confirm. Only after they say yes, call start_analysis "
+                 "with this plan_id and user_confirmed=true."),
     }
 
 
@@ -207,22 +224,28 @@ def _save_runs(runs: list[dict]):
     tmp.replace(path)
 
 
+def _check_run_limit(exclude=None) -> list[dict]:
+    """Refresh states, then refuse if starting/continuing/resuming would exceed the active-run limit."""
+    runs = _run_records()
+    for r in [r for r in runs if r.get("state") not in FINISHED]:
+        try:
+            r["state"] = _cli("status", r["run_id"]).get("state", r.get("state"))
+        except HubError:
+            pass
+    _save_runs(runs)
+    active = [r for r in runs if r.get("state") in ACTIVE | {"cancelling"} and r["run_id"] != exclude]
+    if len(active) >= config.MAX_ACTIVE_RUNS:
+        raise HubError(f"You already have {len(active)} analyses running from the Hub (the limit is "
+                       f"{config.MAX_ACTIVE_RUNS}). Wait for one to finish, or ask BSR.")
+    return runs
+
+
 def start_analysis(user, plan_id, user_confirmed=False) -> dict:
     _require_self(user)
     if user_confirmed is not True:
         raise HubError("Not started. Show the plan to the user and ask them to confirm; then call again with user_confirmed=true.")
     path, record = _load_plan(user, plan_id)
-    runs = _run_records()
-    active = [r for r in runs if r.get("state") not in FINISHED]
-    for r in active:  # refresh before counting
-        try:
-            r["state"] = _cli("status", r["run_id"]).get("state", r.get("state"))
-        except HubError:
-            pass
-    active = [r for r in runs if r.get("state") not in FINISHED]
-    if len(active) >= config.MAX_ACTIVE_RUNS:
-        raise HubError(f"You already have {len(active)} analyses running from the Hub (the limit is "
-                       f"{config.MAX_ACTIVE_RUNS}). Wait for one to finish, or ask BSR.")
+    runs = _check_run_limit()
     result = _cli("start", spec=record["spec"])
     record["used"] = time.time()
     path.write_text(json.dumps(record, indent=2))
@@ -234,8 +257,12 @@ def start_analysis(user, plan_id, user_confirmed=False) -> dict:
         "run_id": result["project_id"],
         "results_folder": result["results_dir"],
         "steps": [s["step"] for s in record["plan"]["steps"]],
-        "next": "Use analysis_status to follow it; when it is complete, open_results gives the user a link to "
-                "CodeSpringApp's Results Explorer for this run.",
+        "mode": record["spec"].get("mode", "auto"),
+        "next": ("Use analysis_status to follow it (and analysis_qc for per-sample QC as steps finish). In 'step' "
+                 "mode it pauses after each step: show that step's QC, then ask whether to continue, add an "
+                 "optional step, skip one, or cancel. You can't message the user on your own: tell them to ask "
+                 "you for an update any time, or rely on the email updates if they turned them on. When it is "
+                 "complete, open_results gives a link to CodeSpringApp's Results Explorer."),
     }
 
 
@@ -248,21 +275,132 @@ def _own_run(run_id) -> dict:
     raise NotFound("No analysis with that id was started by you from the Hub. list_analyses shows yours.")
 
 
-def analysis_status(user, run_id) -> dict:
-    _require_self(user)
-    _own_run(run_id)
-    st = _cli("status", run_id)
+def _remember_state(run_id, state):
     runs = _run_records()
     for r in runs:
         if r["run_id"] == run_id:
-            r["state"] = st.get("state")
+            r["state"] = state
     _save_runs(runs)
-    return {
-        "run_id": run_id, "state": st.get("state"), "error": st.get("error"),
-        "steps": [{k: s.get(k) for k in ("step", "state", "what", "started", "finished", "message") if s.get(k)}
-                  for s in st.get("steps", [])],
+
+
+def analysis_status(user, run_id, include_qc=True) -> dict:
+    _require_self(user)
+    _own_run(run_id)
+    st = _cli("status", run_id)
+    _remember_state(run_id, st.get("state"))
+    steps = []
+    for s in st.get("steps", []):
+        row = {k: s.get(k) for k in ("step", "state", "what", "started", "finished", "message") if s.get(k)}
+        jobs = s.get("jobs") or {}
+        if any(jobs.get(k) for k in ("queued", "running", "done", "failed")):
+            row["jobs"] = {k: jobs.get(k, 0) for k in ("done", "running", "queued", "failed")}
+            if jobs.get("failed_samples"):
+                row["jobs"]["failed_samples"] = jobs["failed_samples"]
+        steps.append(row)
+    out = {
+        "run_id": run_id, "state": st.get("state"), "mode": st.get("mode", "auto"), "error": st.get("error"),
+        "steps": steps, "next_actions": st.get("next_actions", []),
         "results_folder": st.get("results_dir"), "updated": st.get("updated"),
     }
+    if st.get("state") == "paused":
+        out["paused_after"], out["next_step"] = st.get("paused_after"), st.get("next_step")
+    if include_qc and any(s.get("state") in ("complete", "running") for s in steps):
+        try:
+            out["qc_summary"] = _cli("qc", run_id).get("summary")
+        except HubError:
+            pass
+    return out
+
+
+def analysis_qc(user, run_id, step=None) -> dict:
+    _require_self(user)
+    _own_run(run_id)
+    steps = ("Cutadapt", "FastQC", "STAR", "featureCounts", "Kallisto")
+    if step and step not in steps:
+        raise HubError(f"step must be one of: {', '.join(steps)}.")
+    qc = _cli("qc", run_id, *([step] if step else []))
+    return {"run_id": run_id, "samples": qc.get("samples", []), "summary": qc.get("summary"), "note": qc.get("note")}
+
+
+def continue_analysis(user, run_id, add_optional_steps=None, skip_steps=None, mode=None, user_confirmed=False) -> dict:
+    _require_self(user)
+    _own_run(run_id)
+    if user_confirmed is not True:
+        raise HubError("Not continued. Tell the user what will run next (and anything added or skipped), ask them "
+                       "to confirm, then call again with user_confirmed=true.")
+    add = [str(x).lower() for x in (add_optional_steps or [])]
+    bad = [a for a in add if a not in OPTIONAL_STEPS]
+    if bad:
+        raise HubError(f"Optional steps are {', '.join(OPTIONAL_STEPS)} (CodeSpringApp's own); not {', '.join(bad)}.")
+    if mode not in (None, "auto", "step"):
+        raise HubError("mode must be 'auto' (run straight through) or 'step' (pause after each step).")
+    _check_run_limit(exclude=run_id)
+    args = [run_id]
+    if add:
+        args += ["--add", ",".join(add)]
+    if skip_steps:
+        args += ["--skip", ",".join(str(x) for x in skip_steps)]
+    if mode:
+        args += ["--mode", mode]
+    res = _cli("continue", *args)
+    _remember_state(run_id, "queued")
+    return {"run_id": run_id, "continued": True, "steps": res.get("steps"), "note": res.get("note")}
+
+
+def cancel_analysis(user, run_id, user_confirmed=False) -> dict:
+    _require_self(user)
+    _own_run(run_id)
+    if user_confirmed is not True:
+        raise HubError("Not cancelled. Ask the user to confirm they want to stop this analysis (finished steps are "
+                       "kept), then call again with user_confirmed=true.")
+    res = _cli("cancel", run_id, timeout=300)
+    _remember_state(run_id, res.get("state", "cancelled"))
+    return {"run_id": run_id, "state": res.get("state", "cancelled"), "controller": res.get("controller"),
+            "jobs": res.get("jobs"), "note": res.get("note")}
+
+
+REPORT_PLOTS_IN_CHAT = 6
+REPORT_PLOT_MAX_BYTES = 1_500_000
+
+
+def analysis_report(user, run_id, download_link=True) -> dict:
+    """Build (or rebuild) the run's report packet and say where it is. The images to show in the
+    chat are returned separately under "_plot_files" (the tool attaches them; they never reach the
+    log)."""
+    _require_self(user)
+    _own_run(run_id)
+    ans = _cli("report", run_id, timeout=600)
+    report = Path(ans["report"])
+    out = {
+        "run_id": run_id,
+        "state": ans.get("state"),
+        "report_file": str(report),
+        "size_mb": ans.get("size_mb"),
+        "differential_expression": ans.get("deg_summary") or {},
+        "top_pathways": ans.get("gsea_top") or {},
+        "qc_summary": ans.get("qc_summary") or {},
+        "plots_in_report": [p["label"] for p in ans.get("plots", [])],
+        "files_in_report": ans.get("files", []),
+        "kept_on_cluster": ans.get("left_out", []),
+        "note": ans.get("note"),
+    }
+    if ans.get("state") != "complete":
+        out["warning"] = "The run hasn't finished; the report shows only the steps done so far."
+    if download_link:
+        port = portal_launch.running_portal() or portal_launch.start_portal()
+        ticket = identity.issue_download(report)
+        host = config.CONNECT_HOST or _laptop_host()
+        minutes = config.OPEN_LINK_TTL_SECONDS // 60
+        out["download_link"] = f"http://localhost:{port}/api/download/{ticket}"
+        out["how_to_download"] = (f"Click within {minutes} minutes; it works once and saves one HTML file that opens in any "
+                                  "browser, with every plot and small file downloadable from it. If it doesn't load, run "
+                                  "the tunnel command on your laptop (CSHL Wi-Fi or VPN) and ask for a new link.")
+        out["tunnel_command"] = f"ssh -N -L {port}:localhost:{port} {user}@{host}"
+    out["open_in_app"] = "For interactive plots and every file, use open_results to open this run in CodeSpringApp."
+    out["_plot_files"] = [p["path"] for p in ans.get("plots", [])
+                          if p["path"].lower().endswith(".png") and Path(p["path"]).is_file()
+                          and Path(p["path"]).stat().st_size <= REPORT_PLOT_MAX_BYTES][:REPORT_PLOTS_IN_CHAT]
+    return out
 
 
 def list_analyses(user) -> list[dict]:
@@ -270,10 +408,15 @@ def list_analyses(user) -> list[dict]:
     return [{k: r.get(k) for k in ("run_id", "dataset_id", "state", "started")} for r in _run_records()]
 
 
-def resume_analysis(user, run_id) -> dict:
+def resume_analysis(user, run_id, user_confirmed=False) -> dict:
     _require_self(user)
     _own_run(run_id)
+    if user_confirmed is not True:
+        raise HubError("Not resumed. Ask the user to confirm (it submits the remaining steps to the cluster), then "
+                       "call again with user_confirmed=true.")
+    _check_run_limit(exclude=run_id)
     _cli("resume", run_id)
+    _remember_state(run_id, "queued")
     return {"run_id": run_id, "resumed": True, "note": "Finished steps are kept; the rest start again."}
 
 

@@ -157,7 +157,9 @@ npx @modelcontextprotocol/inspector ./env/bin/codespringhub
 | `query_table` | One read-only SQL SELECT on a table file, max 50 rows, no other file access |
 | `list_workflows` | How BSR runs analyses: CodeSpringApp/CodeSpringLab pipelines first, nf-core as secondary |
 | `plan_analysis`, `start_analysis` | Plan a bulk RNA-seq run with BSR's pipeline, show it, start it only after the user confirms |
-| `analysis_status`, `list_analyses`, `resume_analysis` | Follow (or restart) runs you started from the Hub |
+| `analysis_status`, `analysis_qc`, `list_analyses` | Follow runs you started from the Hub: step and job progress, per-sample QC |
+| `continue_analysis`, `cancel_analysis`, `resume_analysis` | Go on after a pause (adding or skipping optional steps), stop a run, or restart one |
+| `analysis_report` | The post-run packet: one HTML page with the app's plots, QC, DEG lists and methods; plots shown in the chat, one-time download link |
 | `open_results` | One-time link to the run in CodeSpringApp's Results Explorer, plus the SSH tunnel command |
 | `open_portal` | Starts your portal if needed and gives a one-time link to it (the portal secret never enters the chat) |
 | `request_bsr_review` | Open a ticket for a human BSR expert |
