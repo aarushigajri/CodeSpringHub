@@ -54,6 +54,8 @@ IT doesn't need to be involved.
 1. **BSR sets up the lab (once):**
    ```bash
    hub add-lab smith-lab --group "smith lab staff" --name "Smith Lab" --pi jsmith
+   hub add-core sequencing --group "seq core staff" --lead jdoe --contact "Jane Doe <jdoe@cshl.edu>"
+   hub seed-cores    # starter pages for CSHL cores not on the Hub yet (see docs/DESIGN.md §15)
    hub check
    ```
 2. **With the lab, in the portal:** fill in the lab page and register shared **data** and **code**.
@@ -108,7 +110,7 @@ edit the files directly:
 
 1. **Small addition:** open `knowledge/bsr/context.md`, add a line or a section, and save.
 2. **New guidance or protocol:** copy `knowledge/bsr/guidance/_TEMPLATE.md` to a new name, such as
-   `guidance/scrna-qc.md`, fill it in and save. It gets a document ID like `doc:bsr/guidance/scrna-qc`.
+   `guidance/scrna-qc.md`, fill it in and save. It gets a document ID like `doc:bsr/shared/guidance/scrna-qc`.
 3. **New dataset:** add an entry to `knowledge/bsr/datasets.yaml`, then run `hub check`.
 4. **New workflow:** add an entry to `knowledge/workflows.yaml`.
 
@@ -135,7 +137,7 @@ pytest -q            # run the tests
 
 **In Claude Code:** start `claude` in this folder. `.mcp.json` registers the server and Claude Code
 asks once whether to trust it. Then try asking: *"Using CodeSpringHub, what BSR datasets
-are there and which workflow fits ds:bsr/demo-rnaseq?"*
+are there and which workflow fits ds:bsr/shared/demo-rnaseq?"*
 
 **Click through the tools by hand** with the MCP Inspector:
 ```bash

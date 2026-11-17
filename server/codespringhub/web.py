@@ -21,10 +21,10 @@ from mcp import Client
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel
 
-from . import editing, hub, knowledge
+from . import editing, hub, knowledge, pipelines
 from .errors import HubError
 from .identity import get_auth, redeem_download
-from .permissions import acting_as, display_name, is_bsr, require_lab
+from .permissions import acting_as, display_name, is_bsr, require_lab, require_visible_lab
 from .server import mcp
 
 DIST = Path(__file__).resolve().parents[2] / "portal" / "dist"
@@ -96,7 +96,7 @@ def create_app(auth=None) -> FastAPI:
 
     @app.get("/api/labs/{lab_id}")
     def lab_detail(lab_id: str, user: str = U):
-        lab = require_lab(user, knowledge.load_labs(), lab_id)
+        lab = require_visible_lab(user, knowledge.load_labs(), lab_id)
         info = next(l for l in hub.list_labs(user) if l["lab_id"] == lab_id)
         return info | {"unix_group": lab.unix_group, "pis": lab.pis,
                        "documents_list": hub.document_index(user, lab)}
@@ -192,6 +192,26 @@ def create_app(auth=None) -> FastAPI:
         version: str = ""
         url: str = ""
         summary: str = ""
+
+    # ---- which CodeSpringApp pipelines labs may use ---------------------------------
+
+    @app.get("/api/pipelines")
+    def pipeline_access(user: str = U):
+        from . import runs
+        try:
+            catalog = runs.catalog()["pipelines"]
+        except Exception:  # noqa: BLE001  (the shared install may be down; the settings still show)
+            catalog = None
+        return pipelines.for_portal(user, catalog)
+
+    class PipelineAccessIn(BaseModel):
+        access: str
+        labs: list[str] = []
+
+    @app.put("/api/pipelines/{pipeline_id}")
+    def pipeline_access_put(pipeline_id: str, body: PipelineAccessIn, user: str = U):
+        pipelines.save(user, pipeline_id, body.access, body.labs)
+        return {"ok": True}
 
     @app.get("/api/workflows")
     def workflows(user: str = U):

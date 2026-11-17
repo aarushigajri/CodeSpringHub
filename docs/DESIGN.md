@@ -34,9 +34,9 @@ a small set of tools, and every tool checks who is asking.
 |---|---|---|
 | **Lab** | A group whose members share access. Membership = a Unix group. | `bsr` → group `bioinformatics` |
 | **Project** | A named piece of work inside a lab. | `codespringhub-pilot` |
-| **Dataset** | A registered pointer to a file or folder on `/grid/`. The data is never copied. | `ds:bsr/demo-rnaseq` |
+| **Dataset** | A registered pointer to a file or folder on `/grid/`. The data is never copied. | `ds:bsr/shared/demo-rnaseq` |
 | **Asset** | One file inside a dataset, named relative to the dataset folder. | `reads/S1_R1.fastq.gz` |
-| **Document** | A Markdown knowledge file (context, guidance, protocol, note). | `doc:bsr/guidance/ai-assisted-analysis` |
+| **Document** | A Markdown knowledge file (context, guidance, protocol, note). | `doc:bsr/shared/guidance/ai-assisted-analysis` |
 | **Workflow** | A BSR-registered analysis pipeline with a status. | `nf-core-rnaseq` (`candidate`) |
 | **Hub ID** | The only handle Claude ever sees for a dataset or document. | `ds:…`, `doc:…` |
 
@@ -127,7 +127,7 @@ Example: a researcher asks *"Which samples in the demo RNA-seq data are treated?
 
 1. **Claude chooses a tool.** At connection time Claude received each tool's name, description and
    input schema, plus the server instructions. It picks `query_table`.
-2. **Claude sends the call:** `query_table(dataset_id="ds:bsr/demo-rnaseq", asset="samplesheet.csv",
+2. **Claude sends the call:** `query_table(dataset_id="ds:bsr/shared/demo-rnaseq", asset="samplesheet.csv",
    sql="SELECT sample FROM data WHERE condition='treated'")`.
 3. **The `@hub_tool` wrapper** records the current user and opens the store.
 4. **Identity and lab check:** the lab ID `bsr` is parsed from the dataset ID. The user's Unix groups
@@ -176,7 +176,7 @@ projects:
 **`datasets.yaml`**
 ```yaml
 datasets:
-  - id: demo-rnaseq                 # becomes ds:bsr/demo-rnaseq
+  - id: demo-rnaseq                 # becomes ds:bsr/shared/demo-rnaseq
     title: Demo bulk RNA-seq (synthetic)
     project: codespringhub-pilot    # must match a project in lab.yaml (hub check)
     path: /grid/…/demo-rnaseq       # file or folder; never shown to Claude
@@ -671,3 +671,90 @@ merges the branch, replace it with clones pinned to a commit of each repository.
 | 14 | HPC admins OK with small Hub run controllers on the login node (same pattern as CodeSpringApp's Sarek) | BSR + HPC admins | before onboarding |
 | 15 | QC cut-offs to flag in chat (e.g. STAR uniquely mapped %), if any; today only tools' own numbers and FastQC's flags are shown | BSR | before pilot |
 | 16 | Largest run from Claude (now 96 samples, batched) | BSR | before pilot |
+
+---
+
+## 15. Core facilities (built 17 Nov 2026)
+
+CSHL's core facilities (BSR, Sequencing, Microscopy, Flow Cytometry, ...) are shared resources:
+they have things every lab should be able to read (protocols, submission guidelines, example data,
+scripts) and things only their own staff should see. A core is a folder in `knowledge/` whose
+`lab.yaml` says `kind: core`.
+
+### 15.1 Layout and who sees what
+
+| Folder | Hub IDs | Who sees it |
+|---|---|---|
+| `<core>/lab.yaml` | | everyone using the Hub (name, website, contacts) |
+| `<core>/shared/` (context.md, datasets.yaml, documents) | `doc:<core>/shared/...`, `ds:<core>/shared/...` | everyone using the Hub: every lab group, every core's staff, BSR |
+| `<core>/internal/` | `doc:<core>/internal/...`, `ds:<core>/internal/...` | the core's staff (its Unix group) only: not BSR, not other labs |
+| `<core>/members/<user>/`, `<core>/private/<user>/` | as for labs | staff member + the core's lead / only the owner |
+
+- The shared section is explicit: nothing is shared unless a staff member puts it there, so an
+  item can't become visible to everyone by accident. A core's top folder holds only `lab.yaml` and
+  these four folders, so other labs can't even see the names of internal documents.
+- Only the core's staff edit its pages (no sign-off step). Others can't suggest edits through the
+  Hub; Claude points them to the core's contacts instead.
+- `list_labs` returns the person's labs, then the cores (BSR first) with `kind`, `sees`
+  ("shared" or "shared and internal"), `on_hub`, `website` and `contacts`. Search covers every
+  core's shared section; a core's internal section only for its staff.
+- Each section has its own git history (`shared/.git`, `internal/.git`), so reading the shared
+  history reveals nothing internal. BSR's shared section stays in the Hub's own repository; every
+  `internal/` folder is git-ignored and never reaches GitHub.
+
+### 15.2 On disk
+
+`acl.grant_core` (GPFS NFSv4 or POSIX): the core folder and `lab.yaml` give the staff group rwx and
+every Hub group r-x (nothing inherited); `shared/` gives staff rwx and every Hub group r-x,
+inherited; `internal/` gives only the staff group rwx, inherited, and closes the owning (BSR) group.
+`hub add-lab` opens every core's shared section to a new lab (`grant_core_reader`); `hub check`
+reports any internal file another group can read. As with labs, only a file's owner can change its
+ACL, and the BSR member who ran `hub add-core` stays the owner of the folders it created (that
+person can still read `internal/`; IT can hand ownership to the core if wanted).
+
+### 15.3 Templates for cores not on the Hub yet
+
+`hub seed-cores` makes a starter page for every core in `knowledge/cshl_cores.yaml` (17 cores,
+taken from CSHL's public core facilities list on 17 Nov 2026; the intranet page needs a login).
+Each gets `kind: core`, no staff group (`on_hub: false`), its website and one-line description,
+and a shared context page with TODO sections (services, how to submit, protocols, data, contacts).
+Everyone sees it, Claude says details may be incomplete, and BSR keeps it until the core joins:
+`hub add-core <id> --group <staff group> --lead <user> --contact "Name <email>"`, which hands the
+pages to the core's staff and takes BSR out of the internal section.
+
+### 15.4 BSR as a core
+
+BSR moved from a lab to a core: its guidance, protocols, example datasets and context page are now
+its shared section (`doc:bsr/shared/guidance/codespring-pipelines`,
+`ds:bsr/shared/codespringlab-rnaseq-example`), which every lab can finally read (before, only the
+bioinformatics group could). BSR still supports every pilot lab as before. In the portal, BSR has
+its own sidebar link and the other cores sit in a "Cores" dropdown, for every user in every lab.
+
+### 15.5 Not yet
+
+- Per-core workflow lists and pipelines run from Claude (today only BSR's RNA-seq pipeline).
+- A core lead approving shared changes (the user chose direct edits for now).
+- Real contacts and staff groups for the 17 templates: each core has to agree to join.
+
+---
+
+## 16. Which CodeSpringApp pipelines labs may use (built 17 Nov 2026)
+
+The Hub reaches CodeSpringApp through `bin/codespring-run` in BSR's shared install (§13): the
+app's catalog lists its pipelines, and bulk RNA-seq can be started from a chat. BSR decides, per
+pipeline, who may use it through the Hub, in `knowledge/bsr/shared/pipelines.yaml`:
+
+| Access | Who | Shipped for |
+|---|---|---|
+| `public` | every lab using the Hub: Claude offers it and may start it from the chat (where the app allows) | bulk RNA-seq, ATAC, ChIP, CUT&RUN, FetchNGS (running standard tools) |
+| `internal` | BSR staff, plus any labs listed under `labs:`; everyone else is told BSR runs it for them and offered `request_bsr_review` | single-cell, Sarek (analysis that needs BSR's judgement) |
+
+- A pipeline not in the file gets `default: internal`, and an unknown access value counts as
+  internal, so nothing becomes public by accident.
+- Enforced in `list_workflows` (each pipeline carries `access` and `you_can_use`), `analysis_options`,
+  `plan_analysis` and again in `start_analysis` (a change after planning still applies).
+- BSR staff change it on the portal's BSR workflows page ("CodeSpringApp pipelines: who can use
+  them": open to every lab, make BSR-only, or choose labs). Each change is committed and logged.
+- This governs what Claude offers and starts. It doesn't lock the CodeSpringApp install itself:
+  someone who opens CodeSpringApp directly can still run any pipeline. Locking the app per group
+  would be a CodeSpringApp change (James).

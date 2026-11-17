@@ -1,6 +1,6 @@
-# Bioinformatics Shared Resource (BSR): lab context
+# Bioinformatics Shared Resource (BSR)
 
-> Claude reads this page first whenever it works with BSR. Edit it freely and save;
+> Everyone using CodeSpringHub sees this page (BSR's shared section). Claude reads it first whenever it works with BSR. Edit it freely and save;
 > the change is live on Claude's next question. Lines marked TODO are ignored as guidance.
 
 ## Who we are

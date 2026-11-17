@@ -3,7 +3,9 @@
 Rule from the proposal: nobody gets anything through the Hub that they could not
 already read on the cluster. Three checks enforce it:
 
-  1. Lab membership: the user must be in the lab's Unix group (from lab.yaml).
+  1. Lab membership: the user must be in the lab's Unix group (from lab.yaml). Core facilities
+     (kind: core) have two sections: `shared/`, for everyone using the Hub, and `internal/`, for
+     the core's staff (its Unix group) only.
   2. Registration: only datasets listed in a lab's datasets.yaml exist for Claude,
      and Claude refers to them by Hub ID, never by path.
   3. The filesystem itself: the resolved file must sit inside the registered folder
@@ -23,6 +25,7 @@ import getpass
 import grp
 import os
 import pwd
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -70,7 +73,26 @@ def is_bsr(user: str) -> bool:
 
 
 def is_member(user: str, lab: Lab) -> bool:
-    return lab.unix_group in user_groups(user)
+    return bool(lab.unix_group) and lab.unix_group in user_groups(user)
+
+
+def is_hub_user(user: str) -> bool:
+    """In any registered lab or core, or BSR: the people a core's shared section is for. (On disk,
+    the ACLs give exactly these groups read access to every core's shared folder.)"""
+    from .knowledge import load_labs
+    groups = user_groups(user)
+    if config.BSR_GROUP in groups:
+        return True
+    key = (user, config.KNOWLEDGE_DIR, frozenset(groups))
+    hit = _HUB_USERS.get(key)
+    if hit and time.monotonic() - hit[1] < 30:  # checked once per item otherwise; lab.yaml rarely changes
+        return hit[0]
+    ok = any(lab.unix_group in groups for lab in load_labs().values() if lab.unix_group)
+    _HUB_USERS[key] = (ok, time.monotonic())
+    return ok
+
+
+_HUB_USERS: dict = {}
 
 
 def is_pi(user: str, lab: Lab) -> bool:
@@ -78,14 +100,24 @@ def is_pi(user: str, lab: Lab) -> bool:
 
 
 def can_access_lab(user: str, lab: Lab) -> bool:
-    """Lab-shared content: the lab's members, plus BSR, who support every pilot lab."""
+    """Lab-shared content: the lab's members, plus BSR, who support every pilot lab. A core's
+    internal section: its staff only (BSR keeps the template of a core not on the Hub yet)."""
+    if lab.is_core:
+        return is_member(user, lab) or (not lab.onboarded and is_bsr(user))
     return is_member(user, lab) or is_bsr(user)
 
 
-def can_see(user: str, lab: Lab, owner: str | None, private: bool = False) -> bool:
-    """Personal content (owner set): only the owner and the lab's PIs. Private content: only the
-    owner. Never BSR as such."""
+def can_view_lab(user: str, lab: Lab) -> bool:
+    """May see the lab at all: full access, or a core's shared section as a Hub user."""
+    return can_access_lab(user, lab) or (lab.is_core and is_hub_user(user))
+
+
+def can_see(user: str, lab: Lab, owner: str | None, private: bool = False, shared: bool = False) -> bool:
+    """Personal content (owner set): only the owner and the lab's PIs (a core's lead). Private
+    content: only the owner. Never BSR as such. A core's shared section: everyone using the Hub."""
     if owner is None:
+        if shared:
+            return lab.is_core and can_view_lab(user, lab)
         return can_access_lab(user, lab)
     if private:
         return user == owner
@@ -107,10 +139,19 @@ def require_lab(user: str, labs: dict[str, Lab], lab_id: str) -> Lab:
     return lab
 
 
+def require_visible_lab(user: str, labs: dict[str, Lab], lab_id: str) -> Lab:
+    """For reading: a lab you belong to, or any core (whose shared section everyone may read)."""
+    lab = labs.get(lab_id)
+    if lab is None or not can_view_lab(user, lab):
+        raise NotFound(f"No accessible lab or core '{lab_id}'. Call list_labs to see the ones you can use.")
+    return lab
+
+
 def require_lab_editor(user: str, labs: dict[str, Lab], lab_id: str) -> Lab:
     lab = require_lab(user, labs, lab_id)
     if not can_edit_lab(user, lab):
-        raise Forbidden(f"You can view {lab.name} but not edit it. Ask the lab's Hub contact or BSR for edit access.")
+        who = "the core's staff" if lab.is_core else "the lab's Hub contact or BSR"
+        raise Forbidden(f"You can view {lab.name} but not edit it. Ask {who} for edit access.")
     return lab
 
 

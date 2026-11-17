@@ -98,7 +98,9 @@ export type Me = {
   assays: string[];
 };
 export type Project = { id: string; name: string; description: string };
-export type Scope = "lab" | "personal" | "private";
+// "lab": the lab (or, in a core facility, its staff only); "shared": a core's everyone-visible section.
+export type Scope = "lab" | "shared" | "personal" | "private";
+export type Contact = { name: string; email?: string };
 export type DocInfo = { id: string; title: string; category: string; rel_path: string; scope: Scope; owner: string | null };
 export type Lab = {
   lab_id: string;
@@ -108,7 +110,12 @@ export type Lab = {
   datasets: number;
   documents: number;
   can_edit: boolean;
-  role: "member" | "pi" | "bsr";
+  role: "member" | "pi" | "bsr" | "staff" | "lead" | "user";
+  kind?: "lab" | "core";
+  sees?: string;
+  on_hub?: boolean;
+  website?: string;
+  contacts?: Contact[];
   unix_group?: string;
   pis?: string[];
   documents_list?: DocInfo[];
@@ -138,3 +145,8 @@ export type Workflow = {
   url: string;
   summary: string;
 };
+
+/** Labs: members (not BSR helpers). Cores: the core's own staff. They get personal and private items. */
+export function isInsider(lab: Lab) {
+  return lab.kind === "core" ? lab.role === "staff" || lab.role === "lead" : lab.role !== "bsr";
+}

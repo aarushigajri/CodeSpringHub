@@ -30,11 +30,11 @@ export default function Home({ ctx }: { ctx: Ctx }) {
       </div>
 
       <h2>Your labs</h2>
-      {ctx.labs.length === 0 && (
+      {ctx.labs.filter((l) => l.kind !== "core").length === 0 && (
         <Empty title="You're not in any CodeSpringHub lab yet.">Ask BSR to add your lab to the pilot.</Empty>
       )}
       <div className="cards">
-        {ctx.labs.map((l) => (
+        {ctx.labs.filter((l) => l.kind !== "core" || l.role === "staff" || l.role === "lead").map((l) => (
           <div key={l.lab_id} className="card">
             <h3>{l.name}</h3>
             <p className="muted">{l.description || "No description yet."}</p>
@@ -44,14 +44,19 @@ export default function Home({ ctx }: { ctx: Ctx }) {
               <span><strong>{l.projects.length}</strong> projects</span>
             </div>
             <div className="actions">
-              <a className="button primary" href={`#/lab/${l.lab_id}/about`}>Open lab</a>
+              <a className="button primary" href={`#/lab/${l.lab_id}/${l.kind === "core" ? "shared" : "about"}`}>{l.kind === "core" ? "Open core" : "Open lab"}</a>
               <a className="button" href={`#/lab/${l.lab_id}/datasets?add=1`}>Add a dataset</a>
-              <a className="button" href={`#/lab/${l.lab_id}/documents?new=1`}>Add a document</a>
+              <a className="button" href={`#/lab/${l.lab_id}/${l.kind === "core" ? "shared" : "documents"}?new=1`}>Add a document</a>
             </div>
             {!l.can_edit && <p className="muted small">You can view this lab but not edit it.</p>}
           </div>
         ))}
       </div>
+
+      <p className="muted">
+        Every CSHL core facility shares its protocols and guidelines here: open <a href="#/lab/bsr/shared">BSR</a> or
+        the <strong>Cores</strong> list in the sidebar.
+      </p>
 
       {ctx.inboxCount > 0 && (
         <div className="callout">

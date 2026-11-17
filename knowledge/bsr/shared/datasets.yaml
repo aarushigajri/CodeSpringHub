@@ -1,5 +1,5 @@
 # Registered datasets: pointers to data on /grid/. The data is never copied.
-# Claude only ever sees the "id" (as ds:bsr/<id>), never the path.
+# Claude only ever sees the "id" (as ds:bsr/shared/<id>), never the path. Everyone using the Hub can use these.
 # sensitivity: "standard" allows short previews; "sensitive" allows summaries only.
 datasets:
   - id: demo-rnaseq

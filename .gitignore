@@ -15,5 +15,7 @@ knowledge/*/
 !knowledge/bsr/
 knowledge/*/members/
 knowledge/*/private/
+# A core's internal section stays on /grid, with its own history (BSR's too).
+knowledge/*/internal/
 knowledge/*/_suggestions/
 knowledge/roles.yaml

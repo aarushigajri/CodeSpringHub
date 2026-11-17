@@ -30,7 +30,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import agent, config, identity, portal_launch, qc, storage, store
+from . import agent, config, identity, pipelines, portal_launch, qc, storage, store
 from .errors import Forbidden, HubError, NotFound
 from .hub import get_dataset
 from .permissions import resolve_asset
@@ -204,6 +204,7 @@ def plan_analysis(user, dataset_id, project_name, species, fastq_folder="", desi
                   min_length=20, count_by="gene_name", compare=None, pathway_geneset=None, pathway_genesets=None,
                   extra_quantification=None, run_mode="all", email_updates=False, email_every_hours=0) -> dict:
     _require_self(user)
+    pipelines.require(user, "rnaseq")  # BSR decides which pipelines labs may start themselves
     sets, quants, mode = _choices(pathway_geneset, pathway_genesets, extra_quantification, run_mode)
     if _needs_new_runner(sets, quants, mode, bool(email_updates)) and _cli("catalog").get("spec_version", 1) < 2:
         raise HubError("Several gene sets, RSEM/Kallisto and one-step-at-a-time runs need a CodeSpringApp update that "
@@ -338,6 +339,7 @@ def start_analysis(user, plan_id, user_confirmed=False) -> dict:
     if user_confirmed is not True:
         raise HubError("Not started. Show the plan to the user and ask them to confirm; then call again with user_confirmed=true.")
     path, record = _load_plan(user, plan_id)
+    pipelines.require(user, record["spec"].get("pipeline", "rnaseq"))  # BSR may have changed it since planning
     runs = _check_run_limit()
     est = (record["plan"].get("storage") or {}).get("rnaseq_estimate") or {}
     storage.require_room(est.get("typical_bytes", 0),

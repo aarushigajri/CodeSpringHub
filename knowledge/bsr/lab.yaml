@@ -1,7 +1,17 @@
-# Who this "lab" is and who may see it through the Hub.
+# BSR is a core facility (kind: core). Its shared/ section is for everyone using the Hub; its
+# internal/ section (kept on /grid only, never on GitHub) is for BSR staff.
+kind: core
 name: Bioinformatics Shared Resource (BSR)
-unix_group: bioinformatics        # members of this Unix group can use this lab in the Hub
+unix_group: bioinformatics        # BSR staff
 description: CSHL core facility providing bioinformatics analysis, workflows, training and AI guidance.
+website: https://www.cshl.edu/research/cancer/bioinformatics/
+contacts:
+  - name: Aarushi Gajri
+    email: gajri@cshl.edu
+  - name: James Rouse
+    email: rouse@cshl.edu
+  - name: Rad Utama
+    email: utama@cshl.edu
 
 projects:
   - id: codespringhub-pilot

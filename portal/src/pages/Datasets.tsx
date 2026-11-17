@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Ctx } from "../App";
-import { Dataset, Lab, callTool, del, get, post, put } from "../api";
-import { Badge, Empty, FolderPicker, Help, Modal, attempt } from "../components";
+import { Dataset, Lab, Scope, callTool, del, get, isInsider, post, put } from "../api";
+import { Badge, Empty, FolderPicker, Help, Modal, ScopeChoices, attempt } from "../components";
 import { AssetView } from "../Friendly";
 
 const idQuery = (id: string) => `?id=${encodeURIComponent(id)}`;
@@ -13,7 +13,8 @@ export default function Datasets({ ctx, lab, openAdd, onChanged }: {
   const [editing, setEditing] = useState<Dataset | "new" | null>(openAdd ? "new" : null);
   const [removing, setRemoving] = useState<Dataset | null>(null);
   const [peek, setPeek] = useState<Dataset | null>(null);
-  const isMember = lab.role !== "bsr";
+  const isMember = isInsider(lab);
+  const isCore = lab.kind === "core";
 
   async function load() {
     setRows(await get<Dataset[]>(`/api/labs/${lab.lab_id}/datasets`));
@@ -32,8 +33,9 @@ export default function Datasets({ ctx, lab, openAdd, onChanged }: {
     }
   }
 
-  const shared = rows?.filter((d) => d.scope === "lab") ?? [];
-  const personal = rows?.filter((d) => d.scope !== "lab") ?? [];
+  const shared = rows?.filter((d) => d.scope === (isCore ? "shared" : "lab")) ?? [];
+  const internal = isCore ? rows?.filter((d) => d.scope === "lab") ?? [] : [];
+  const personal = rows?.filter((d) => d.scope === "personal" || d.scope === "private") ?? [];
 
   return (
     <div className="stack">
@@ -49,10 +51,20 @@ export default function Datasets({ ctx, lab, openAdd, onChanged }: {
 
       {rows && (
         <>
-          <h3>Shared with the lab</h3>
+          <h3>{isCore ? "Shared with everyone" : "Shared with the lab"}</h3>
           {shared.length === 0
-            ? <Empty title="Nothing shared yet.">Everything here is visible to all lab members and to BSR.</Empty>
+            ? <Empty title="Nothing shared yet.">{isCore
+                ? "Example data and scripts here are visible to every lab using CodeSpringHub."
+                : "Everything here is visible to all lab members and to BSR."}</Empty>
             : <Table rows={shared} lab={lab} onPeek={setPeek} onEdit={setEditing} onRemove={setRemoving} />}
+          {isCore && isMember && (
+            <>
+              <h3>Internal: core staff only</h3>
+              {internal.length === 0
+                ? <Empty title="Nothing internal yet.">Only this core's staff can see these.</Empty>
+                : <Table rows={internal} lab={lab} onPeek={setPeek} onEdit={setEditing} onRemove={setRemoving} />}
+            </>
+          )}
 
           {(isMember || personal.length > 0) && (
             <>
@@ -137,11 +149,10 @@ function DatasetWizard({ ctx, lab, existing, onClose, onSaved }: {
   ctx: Ctx; lab: Lab; existing: Dataset | null; onClose: () => void; onSaved: () => Promise<void>;
 }) {
   const canShare = lab.can_edit;
-  const canPersonal = lab.role !== "bsr";
   const [step, setStep] = useState(existing ? 2 : 1);
   const [path, setPath] = useState(existing?.path ?? "");
   const [kind, setKind] = useState<"data" | "code">(existing?.kind ?? "data");
-  const [scope, setScope] = useState(existing?.scope ?? (canShare ? "lab" : "personal"));
+  const [scope, setScope] = useState<Scope>(existing?.scope ?? (canShare ? (lab.kind === "core" ? "shared" : "lab") : "personal"));
   const [title, setTitle] = useState(existing?.title ?? "");
   const [project, setProject] = useState(existing?.project ?? "");
   const [assay, setAssay] = useState(existing?.assay ?? "");
@@ -207,24 +218,7 @@ function DatasetWizard({ ctx, lab, existing, onClose, onSaved }: {
 
           {!existing && (
             <>
-              <div className="label">Who can see it?</div>
-              <div className="choices three">
-                <label className={`choice ${scope === "lab" ? "on" : ""} ${canShare ? "" : "disabled"}`}>
-                  <input type="radio" disabled={!canShare} checked={scope === "lab"} onChange={() => setScope("lab")} />
-                  <strong>The whole lab</strong>
-                  <span className="muted">All lab members, and BSR when helping your lab.</span>
-                </label>
-                <label className={`choice ${scope === "personal" ? "on" : ""} ${canPersonal ? "" : "disabled"}`}>
-                  <input type="radio" disabled={!canPersonal} checked={scope === "personal"} onChange={() => setScope("personal")} />
-                  <strong>Me and my PI</strong>
-                  <span className="muted">Work in progress. Other members and BSR can't see it.</span>
-                </label>
-                <label className={`choice ${scope === "private" ? "on" : ""} ${canPersonal ? "" : "disabled"}`}>
-                  <input type="radio" disabled={!canPersonal} checked={scope === "private"} onChange={() => setScope("private")} />
-                  <strong>Only me</strong>
-                  <span className="muted">Not your PI, not BSR, not other members.</span>
-                </label>
-              </div>
+              <ScopeChoices lab={lab} scope={scope} setScope={setScope} />
             </>
           )}
 

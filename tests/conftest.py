@@ -56,7 +56,7 @@ def hub(tmp_path, monkeypatch):
     (code / "R").mkdir(parents=True)
     (code / "R" / "de.R").write_text("library(DESeq2)\n# alpha-lab differential expression\n")
     (code / "run.sh").write_text("#!/bin/bash\nRscript R/de.R\n")
-    ds_yaml = kdir / "bsr" / "datasets.yaml"
+    ds_yaml = kdir / "bsr" / "shared" / "datasets.yaml"
     # datasets.yaml names the live install's demo_data; point it at the copy whichever clone runs the tests
     ds_yaml.write_text(re.sub(r"\S*/demo_data(?=/)", str(data), ds_yaml.read_text()))
 
@@ -65,7 +65,7 @@ def hub(tmp_path, monkeypatch):
     (kdir / "roles.yaml").write_text("labs:\n  lab-a:\n    pis: [pia]\n")
 
     subprocess.run(["git", "init", "-q", str(home)], check=True)
-    (home / ".gitignore").write_text("knowledge/*/\n!knowledge/bsr/\nknowledge/*/members/\nvar/\n")
+    (home / ".gitignore").write_text("knowledge/*/\n!knowledge/bsr/\nknowledge/*/members/\nknowledge/*/internal/\nvar/\n")
     subprocess.run(["git", "-C", str(home), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(home), "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "init"],
                    check=True)

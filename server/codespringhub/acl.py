@@ -14,6 +14,10 @@ result; `entries()` reports either kind in one numeric form, e.g. {'group:1234:r
                                removed so BSR and other members can't get in
     knowledge/<lab>/private/<user>/
                                PRIVATE: owner only (not BSR, not the PI)
+    knowledge/<core>/          a core facility: its staff group rwx; every Hub group r-x on the folder
+                               and lab.yaml only (nothing inherited)
+    knowledge/<core>/shared/   SHARED: staff rwx, every Hub group (labs, cores, BSR) r-x, inherited
+    knowledge/<core>/internal/ INTERNAL: the core's staff only, inherited (no BSR, no labs)
     var/                       BSR only; each pilot lab group --x (to reach var/events)
     var/events/                BSR rwx; each pilot lab group -wx (create own file, can't list);
                                sticky, so nobody can delete or rename someone else's log
@@ -242,6 +246,111 @@ def grant_lab(lab_dir: Path, unix_group: str):
             continue
         if p.stat().st_uid == os.getuid():  # only an owner may set an ACL
             _nfs4_put(p, lab_entries)
+
+
+# ---- core facilities ------------------------------------------------------------------
+
+def _mine(p: Path) -> bool:
+    return p.stat().st_uid == os.getuid()  # only an owner may set an ACL
+
+
+def grant_core(core_dir: Path, staff_group: str | None, reader_groups: list[str]):
+    """A core's folders. staff_group None = not on the Hub yet: BSR keeps it (staff = BSR's group).
+    reader_groups: every lab and core group, who may read lab.yaml and the shared section."""
+    staff = _gid(staff_group or config.BSR_GROUP)
+    readers = set()
+    for g in reader_groups:
+        try:
+            readers.add(_gid(g))
+        except KeyError:
+            continue  # a lab whose group was removed; `hub check` reports it
+    readers = sorted(readers - {staff})
+    bsr_keeps = staff_group is None
+    shared, internal = core_dir / "shared", core_dir / "internal"
+    for d in (shared, internal, core_dir / "members", core_dir / "private"):
+        d.mkdir(exist_ok=True)
+    os.chmod(core_dir, 0o2750)
+    os.chmod(shared, 0o2770)
+    os.chmod(internal, 0o2770 if bsr_keeps else 0o2700)
+    for sub in ("members", "private"):
+        os.chmod(core_dir / sub, 0o3770 if bsr_keeps else 0o3700)
+    if not is_nfs4(core_dir):
+        read = ",".join(f"g:{g}:r-x" for g in readers)
+        top = f"g:{staff}:rwx" + (f",{read}" if read else "")
+        setfacl(core_dir, top)
+        if (core_dir / "lab.yaml").exists():
+            setfacl(core_dir / "lab.yaml", top.replace("r-x", "r--").replace("rwx", "rw-"))
+        dflt = f"g:{staff}:rwx,d:g:{staff}:rwx,d:u::rwx,d:o::---,m::rwx,d:m::rwx" + "".join(
+            f",g:{g}:r-x,d:g:{g}:r-x" for g in readers)
+        setfacl(shared, dflt + ",d:g::rwx", "-R")
+        strip(internal, recursive=True)
+        setfacl(internal, f"g::{'rwx' if bsr_keeps else '---'},o::---,g:{staff}:rwx,d:g:{staff}:rwx,d:u::rwx,"
+                          f"d:g::{'rwx' if bsr_keeps else '---'},d:o::---,m::rwx,d:m::rwx", "-R")
+        for sub in ("members", "private"):
+            setfacl(core_dir / sub, f"g:{staff}:rwx")
+        return
+    bsr = "r-x"
+    top = [("special:owner@", "rwxc", False), ("special:group@", bsr if not bsr_keeps else "rwx", False),
+           (f"group:{staff}", "rwx", False)] + [(f"group:{g}", "r-x", False) for g in readers]
+    if _mine(core_dir):
+        _nfs4_put(core_dir, top)
+    if (core_dir / "lab.yaml").exists() and _mine(core_dir / "lab.yaml"):
+        _nfs4_put(core_dir / "lab.yaml", top)
+    shared_entries = [("special:owner@", "rwxc", True), ("special:group@", "rwx" if bsr_keeps else "r-x", True),
+                      (f"group:{staff}", "rwx", True)] + [(f"group:{g}", "r-x", True) for g in readers]
+    for p in _walk(shared):
+        if _mine(p):
+            _nfs4_put(p, shared_entries)
+    internal_entries = [("special:owner@", "rwxc", True), ("special:group@", "rwx" if bsr_keeps else "---", True),
+                        (f"group:{staff}", "rwx", True)]
+    for p in _walk(internal):
+        if _mine(p):
+            _nfs4_put(p, internal_entries)
+    for sub in ("members", "private"):
+        if _mine(core_dir / sub):
+            _nfs4_put(core_dir / sub, [("special:owner@", "rwxc", False),
+                                       ("special:group@", "rax" if bsr_keeps else "---", False),
+                                       (f"group:{staff}", "rax", False)])
+
+
+def grant_core_reader(core_dir: Path, group: str):
+    """A newly added lab (or core) may read an existing core's lab.yaml and shared section."""
+    g = _gid(group)
+    shared = core_dir / "shared"
+    if not is_nfs4(core_dir):
+        setfacl(core_dir, f"g:{g}:r-x")
+        if (core_dir / "lab.yaml").exists():
+            setfacl(core_dir / "lab.yaml", f"g:{g}:r--")
+        if shared.exists():
+            setfacl(shared, f"g:{g}:r-x,d:g:{g}:r-x", "-R")
+        return
+    for p in (core_dir, core_dir / "lab.yaml"):
+        if p.exists() and _mine(p):
+            _nfs4_add(p, f"group:{g}", "r-x", False)
+    if shared.exists():
+        for p in _walk(shared):
+            if _mine(p):
+                _nfs4_add(p, f"group:{g}", "r-x", True)
+
+
+def core_problems(core_dir: Path, staff_group: str | None) -> list[str]:
+    """What `hub check` reports for a core: an internal section anyone but its staff can read."""
+    problems = []
+    internal = core_dir / "internal"
+    if not internal.exists() or staff_group is None:
+        return problems
+    staff = _gid(staff_group)
+    for p in [internal, *[q for q in internal.rglob("*")][:500]]:
+        try:
+            if p.stat().st_mode & 0o007:
+                problems.append(f"{p} is open to all cluster users")
+            for e in entries(p):
+                e2 = e[len("default:"):] if e.startswith("default:") else e
+                if e2.startswith("group:") and not e2.startswith(f"group:{staff}:"):
+                    problems.append(f"{p} grants a group other than the core's staff: {e2}")
+        except OSError:
+            continue
+    return problems
 
 
 def grant_lab_paths(unix_group: str):

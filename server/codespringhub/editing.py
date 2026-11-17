@@ -23,8 +23,8 @@ import yaml
 
 from . import acl, config, knowledge, store
 from .errors import Forbidden, HubError, NotFound
-from .permissions import (can_access_lab, can_see, display_name, is_bsr, is_member, require_lab,
-                          require_lab_editor, require_member)
+from .permissions import (can_access_lab, can_edit_lab, can_see, display_name, is_bsr, is_member, require_lab,
+                          require_lab_editor, require_member, require_visible_lab)
 
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 USERNAME = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}$")
@@ -37,8 +37,18 @@ CATEGORIES = {
 ASSAYS = ["rna-seq", "scrna-seq", "atac-seq", "chip-seq", "wgs", "wes", "dna-seq", "methylation",
           "proteomics", "imaging", "other"]
 KINDS = ("data", "code")
-SCOPES = ("lab", "personal", "private")  # private = only the owner, not their PI
-WHO_CAN_SEE = "Choose who can see it: the lab, you and your PI, or only you."
+SCOPES = ("lab", "shared", "personal", "private")  # private = only the owner, not their PI
+WHO_CAN_SEE = ("Choose who can see it: the lab, you and your PI, or only you. In a core facility: everyone "
+               "(shared), the core's staff, you and the core's lead, or only you.")
+
+
+def _area_for(lab, scope: str) -> str:
+    """Where a lab-level item of this scope lives: '' (a lab's top folder) or a core's section."""
+    if scope == "shared" and not lab.is_core:
+        raise HubError("Only core facilities have a shared section; in a lab, choose the lab, you and your PI, or only you.")
+    if not lab.is_core:
+        return ""
+    return knowledge.SHARED_PART if scope == "shared" else knowledge.INTERNAL_PART
 YAML_HEADER = "# Managed by the CodeSpringHub portal. Hand edits are fine; keep the structure.\n"
 
 _git_lock = threading.Lock()
@@ -123,7 +133,10 @@ def _audit(user, action, details, lab_id=None, personal=False):
 
 
 def history(user, lab_id, rel_path=None, limit=20) -> list[dict]:
-    lab = require_lab(user, knowledge.load_labs(), lab_id)
+    labs = knowledge.load_labs()
+    # A core's shared documents have their own history (shared/.git), readable by everyone; the rest
+    # is for the lab's members or the core's staff.
+    lab = require_visible_lab(user, labs, lab_id) if rel_path else require_lab(user, labs, lab_id)
     target = lab.dir / rel_path if rel_path else lab.dir / "lab.yaml"
     if rel_path:
         _check_doc_visible(user, lab, rel_path)
@@ -185,7 +198,10 @@ def update_lab(user, lab_id, name: str, description: str, projects: list[dict]):
         seen.add(pid)
         clean.append({"id": pid, "name": p.get("name", "").strip() or pid, "description": p.get("description", "").strip()})
     path = lab.dir / "lab.yaml"
-    data = {"name": name.strip(), "unix_group": lab.unix_group, "description": description.strip(), "projects": clean}
+    with open(path) as fh:
+        data = yaml.safe_load(fh) or {}  # keep kind, website, contacts and anything else BSR set
+    data.update({"name": name.strip(), "unix_group": lab.unix_group or data.get("unix_group", ""),
+                 "description": description.strip(), "projects": clean})
     _write_atomic(path, YAML_HEADER + yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
     _commit(user, [path], f"update {lab_id} lab details")
     _audit(user, "update_lab", {"lab_id": lab_id}, lab_id=lab_id)
@@ -193,9 +209,10 @@ def update_lab(user, lab_id, name: str, description: str, projects: list[dict]):
 
 # ---- documents -----------------------------------------------------------------
 
-def _parse_doc_path(rel_path: str) -> tuple[str | None, str, bool]:
+def _parse_doc_path(rel_path: str, lab=None) -> tuple[str | None, str, bool]:
     """'guidance/x.md' -> (None, ..., False); 'members/ann/notes/x.md' -> ('ann', 'notes/x.md', False);
-    'private/ann/notes/x.md' -> ('ann', 'notes/x.md', True)."""
+    'private/ann/notes/x.md' -> ('ann', 'notes/x.md', True). In a core, lab-level documents live in
+    'shared/...' or 'internal/...' (use _doc_area for which)."""
     parts = Path(rel_path).parts
     if len(parts) == 4 and parts[0] in ("members", "private"):
         owner, inner = parts[1], "/".join(parts[2:])
@@ -204,7 +221,16 @@ def _parse_doc_path(rel_path: str) -> tuple[str | None, str, bool]:
         return owner, inner, parts[0] == "private"
     if parts and parts[0] in ("members", "private"):
         raise HubError("Unknown personal folder.")
+    if lab is not None and lab.is_core:
+        if len(parts) < 2 or parts[0] not in (knowledge.SHARED_PART, knowledge.INTERNAL_PART):
+            raise HubError("A core's documents live in its shared/ or internal/ section.")
+        return None, "/".join(parts[1:]), False
     return None, rel_path, False
+
+
+def _doc_area(lab, rel_path: str) -> str:
+    parts = Path(rel_path).parts
+    return parts[0] if lab.is_core and parts and parts[0] in (knowledge.SHARED_PART, knowledge.INTERNAL_PART) else ""
 
 
 def _check_inner(inner: str, owner: str | None):
@@ -218,27 +244,28 @@ def _check_inner(inner: str, owner: str | None):
 
 
 def _check_doc_visible(user, lab, rel_path) -> tuple[str | None, bool]:
-    owner, inner, private = _parse_doc_path(rel_path)
+    owner, inner, private = _parse_doc_path(rel_path, lab)
     _check_inner(inner, owner)
-    if not can_see(user, lab, owner, private):
+    if not can_see(user, lab, owner, private, _doc_area(lab, rel_path) == knowledge.SHARED_PART):
         raise NotFound("That document doesn't exist (it may have been deleted).")
     return owner, private
 
 
 def read_document_file(user, lab_id, rel_path) -> dict:
-    lab = require_lab(user, knowledge.load_labs(), lab_id)
+    lab = require_visible_lab(user, knowledge.load_labs(), lab_id)
     owner, private = _check_doc_visible(user, lab, rel_path)
     path = lab.dir / rel_path
     if not path.exists():
         raise NotFound("That document doesn't exist (it may have been deleted).")
-    can_edit = os.access(path, os.W_OK) and (owner is None or owner == user)
+    can_edit = os.access(path, os.W_OK) and (owner == user if owner else can_edit_lab(user, lab))
+    shared = _doc_area(lab, rel_path) == knowledge.SHARED_PART
     return {"rel_path": rel_path, "text": path.read_text(), "can_edit": can_edit,
-            "scope": "private" if private else "personal" if owner else "lab", "owner": owner}
+            "scope": "private" if private else "personal" if owner else "shared" if shared else "lab", "owner": owner}
 
 
 def _writable_doc(user, lab_id, rel_path):
     labs = knowledge.load_labs()
-    owner, inner, private = _parse_doc_path(rel_path)
+    owner, inner, private = _parse_doc_path(rel_path, labs.get(lab_id))
     _check_inner(inner, owner)
     if owner is None:
         lab = require_lab_editor(user, labs, lab_id)
@@ -255,7 +282,7 @@ def save_document(user, lab_id, rel_path, text: str):
     if len(text) > 200_000:
         raise HubError("That document is very long (over 200,000 characters). Split it into several documents.")
     if not path.parent.exists():
-        path.parent.mkdir()
+        path.parent.mkdir(parents=True)  # parents: a core's internal/ section may not exist yet
         if owner and not acl.inherits(path.parent.parent):
             os.chmod(path.parent, 0o2700)
     _write_atomic(path, text if text.endswith("\n") else text + "\n")
@@ -273,8 +300,10 @@ def create_document(user, lab_id, category: str, title: str, scope: str = "lab")
     if not title.strip():
         raise HubError("Give the document a title.")
     inner = f"{category}/{slugify(title)}.md"
-    rel_path = {"personal": f"members/{user}/{inner}", "private": f"private/{user}/{inner}"}.get(scope, inner)
     lab = require_lab(user, knowledge.load_labs(), lab_id)
+    area = "" if scope in ("personal", "private") else _area_for(lab, scope)
+    rel_path = {"personal": f"members/{user}/{inner}", "private": f"private/{user}/{inner}"}.get(
+        scope, f"{area}/{inner}" if area else inner)
     if (lab.dir / rel_path).exists():
         raise HubError("A document with a very similar title already exists. Open that one, or choose another title.")
     template = (
@@ -286,7 +315,7 @@ def create_document(user, lab_id, category: str, title: str, scope: str = "lab")
 
 
 def delete_document(user, lab_id, rel_path):
-    if rel_path == "context.md":
+    if Path(rel_path).name == "context.md" and len(Path(rel_path).parts) <= 2 and not rel_path.startswith(("members/", "private/")):
         raise HubError("The lab context page can't be deleted; clear its text instead.")
     lab, path, owner, private = _writable_doc(user, lab_id, rel_path)
     if not path.exists():
@@ -299,7 +328,12 @@ def delete_document(user, lab_id, rel_path):
 # ---- datasets and code ---------------------------------------------------------------
 
 def _datasets_file(user, lab, scope) -> Path:
-    return (lab.dir if scope == "lab" else ensure_personal(user, lab, scope == "private")) / "datasets.yaml"
+    if scope in ("personal", "private"):
+        return ensure_personal(user, lab, scope == "private") / "datasets.yaml"
+    area = _area_for(lab, scope)
+    folder = lab.dir / area if area else lab.dir
+    folder.mkdir(exist_ok=True)
+    return folder / "datasets.yaml"
 
 
 def _load_entries(path: Path) -> list[dict]:
@@ -335,7 +369,7 @@ def _split_dataset_id(user, lab, hub_id: str) -> tuple[str, str]:
         raise NotFound("That dataset isn't registered in this lab.")
     if owner is None:
         require_lab_editor(user, {lab.id: lab}, lab.id)
-        return "lab", short
+        return ("shared" if lab.is_core and hub_id.startswith(f"ds:{lab.id}/{knowledge.SHARED_PART}/") else "lab"), short
     if owner != user:
         raise Forbidden("Only the owner can change a personal item.")
     return ("private" if knowledge.is_private_id(hub_id) else "personal"), short
@@ -351,7 +385,8 @@ def save_dataset(user, lab_id, entry: dict, original_id: str | None = None) -> s
         scope, original_short = entry.get("scope", "lab"), None
         if scope not in SCOPES:
             raise HubError(WHO_CAN_SEE)
-        if scope == "lab":
+        if scope in ("lab", "shared"):
+            _area_for(lab, scope)
             require_lab_editor(user, {lab.id: lab}, lab.id)
     title = (entry.get("title") or "").strip()
     if not title:
@@ -387,14 +422,15 @@ def save_dataset(user, lab_id, entry: dict, original_id: str | None = None) -> s
     else:
         entries.append(new)
     _write_atomic(path, YAML_HEADER + yaml.safe_dump({"datasets": entries}, sort_keys=False, allow_unicode=True))
-    if scope != "lab":
+    mine = scope in ("personal", "private")
+    if mine:
         secure_own(lab, user, scope == "private")
     verb = "update" if existing else "register"
-    _commit(user, [path], f"{verb} {kind} {f'({scope})' if scope != 'lab' else lab_id + '/' + ds_id}")
-    _audit(user, "save_dataset", {"lab_id": lab_id, "dataset": ds_id, "kind": kind}, lab_id=lab_id,
-           personal=scope != "lab")
+    _commit(user, [path], f"{verb} {kind} {f'({scope})' if mine else lab_id + '/' + ds_id}")
+    _audit(user, "save_dataset", {"lab_id": lab_id, "dataset": ds_id, "kind": kind}, lab_id=lab_id, personal=mine)
+    area = "" if mine else _area_for(lab, scope)
     return {"personal": f"ds:{lab_id}/~{user}/{ds_id}", "private": f"ds:{lab_id}/~{user}/private/{ds_id}"}.get(
-        scope, f"ds:{lab_id}/{ds_id}")
+        scope, f"ds:{lab_id}/{area}/{ds_id}" if area else f"ds:{lab_id}/{ds_id}")
 
 
 def delete_dataset(user, lab_id, hub_id):
@@ -406,18 +442,19 @@ def delete_dataset(user, lab_id, hub_id):
     if len(remaining) == len(entries):
         raise NotFound("That isn't registered.")
     _write_atomic(path, YAML_HEADER + yaml.safe_dump({"datasets": remaining}, sort_keys=False, allow_unicode=True))
-    _commit(user, [path], f"unregister {f'({scope})' if scope != 'lab' else lab_id + '/' + short}")
-    _audit(user, "delete_dataset", {"lab_id": lab_id, "dataset": short}, lab_id=lab_id, personal=scope != "lab")
+    mine = scope in ("personal", "private")
+    _commit(user, [path], f"unregister {f'({scope})' if mine else lab_id + '/' + short}")
+    _audit(user, "delete_dataset", {"lab_id": lab_id, "dataset": short}, lab_id=lab_id, personal=mine)
 
 
 def datasets_for_portal(user, lab_id) -> list[dict]:
     """Like the model's view, plus the folder path (people registered it) and edit rights."""
-    lab = require_lab(user, knowledge.load_labs(), lab_id)
+    lab = require_visible_lab(user, knowledge.load_labs(), lab_id)
     out = []
     for d in knowledge.load_datasets(lab).values():
-        if not can_see(user, lab, d.owner, d.private):
+        if not can_see(user, lab, d.owner, d.private, d.shared):
             continue
-        can_edit = (d.owner == user) if d.owner else os.access(lab.dir, os.W_OK)
+        can_edit = (d.owner == user) if d.owner else can_edit_lab(user, lab)
         out.append({
             "id": d.id, "short_id": d.short_id.split("/")[-1], "title": d.title, "kind": d.kind,
             "project": d.project, "assay": d.assay, "description": d.description, "sensitivity": d.sensitivity,
@@ -522,7 +559,7 @@ def _suggestion_files(user) -> list[tuple[Path, dict, bool]]:
     for lab in knowledge.load_labs().values():
         if not can_access_lab(user, lab):
             continue
-        folders = [(lab.dir / "_suggestions", None, False)]
+        folders = [((lab.dir / knowledge.INTERNAL_PART if lab.is_core else lab.dir) / "_suggestions", None, False)]
         folders += [(d / "_suggestions", owner, False) for owner, d in knowledge.member_dirs(lab)]
         folders += [(d / "_suggestions", owner, True) for owner, d in knowledge.private_dirs(lab)]
         for folder, owner, private in folders:
