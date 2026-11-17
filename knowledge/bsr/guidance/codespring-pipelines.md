@@ -42,6 +42,38 @@ Optional in CodeSpringApp only: RSEM and Kallisto quantification.
 **References**: human GRCh38 / GENCODE v50 (default) or v42 (legacy); mouse GRCm39 / GENCODE M39
 (default) or M29 (legacy). Maize references exist for RNA-seq in the app.
 
+## Storage: say it at the start of every project
+
+Before a project starts, tell the researcher how much space is free where results go
+(`~/csl_results/`) and how much the pipeline is expected to write, as a range. From Claude,
+`check_storage` gives both for a registered dataset, and `plan_analysis` repeats them in the plan.
+Raw FASTQs are read in place, never copied.
+
+**Bulk RNA-seq (BSR standard pipeline)**: about **5.6x-9.1x the gzipped FASTQ size, typically 7x**,
+measured on a real BSR run (12 paired-end mouse FASTQs, 620 MB -> 4.4 GB). Per GB of gzipped FASTQ:
+
+| Step | Kept on disk | Typical per GB of raw |
+|---|---|---|
+| Cutadapt | trimmed FASTQs (gzipped) | ~1.05 GB |
+| STAR | sorted genome BAM + index (~1.0 GB) and transcriptome BAM for RSEM (~3.6 GB) | ~4.9 GB |
+| featureCounts | per-sample count tables | ~1.0 GB |
+| FastQC | reports | ~0.1 GB |
+| Counts, DESeq2, GSEApy, logs | small tables and plots | ~50 MB in total |
+
+The range (0.8x-1.3x the typical figure) covers read length, depth, multimapping and how well reads
+compress. STAR also needs scratch space while sorting, so have **at least the high end free**. With
+trimming off, take away the Cutadapt share. Example: 50 GB of FASTQs -> ~282-458 GB, typically
+~352 GB.
+
+**Other pipelines (run in CodeSpringApp)**: rough guidance only, not yet measured on full-size data.
+
+- ATAC-seq and ChIP-seq: BAMs (Bowtie2) are roughly 1-2x the raw FASTQ size, plus trimmed FASTQs
+  (~1x); plan for about 3-4x the raw data. TODO: measure on a full-size run.
+- Single-cell RNA-seq (Cell Ranger): TODO: measure (the BAM alone is often 1-2x the FASTQs).
+- Whole-genome variants (sarek): TODO: measure (CRAMs and the nf-core work folder are large).
+
+When in doubt, or for very large projects, ask BSR (request_bsr_review).
+
 ## What to tell researchers
 
 - Each step uses the CPU, memory and time limits written into CodeSpringLab's Slurm scripts;

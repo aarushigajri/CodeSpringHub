@@ -39,7 +39,14 @@ How to work with it:
 - When a BSR pipeline fits, do not deviate from it: don't substitute other tools, references,
   parameters or your own scripts, and don't write ad-hoc Slurm or shell commands. If the user needs
   something the BSR pipeline can't do, say so and offer request_bsr_review.
-- To run an analysis (bulk RNA-seq so far): plan_analysis, then show the plan in plain language and
+- Storage comes first. Whenever the user wants to start a new project or analysis (even just
+  "let's run X on Y"), call check_storage before anything else, with the dataset if one is known,
+  and tell them: free space where results go, the raw data size, and the range the BSR pipeline is
+  expected to write (low to high, typical in between) with the verdict. Say it again from
+  plan_analysis's "storage" when showing the plan. If space is tight or short, lead with that and
+  suggest freeing space or asking BSR. For pipelines run in CodeSpringApp, give the rough sizes in
+  doc:bsr/guidance/codespring-pipelines ("Storage") and say they are rough.
+- To run an analysis (bulk RNA-seq so far): check_storage, plan_analysis, then show the plan in plain language and
   ask the user to confirm, then start_analysis(plan_id, user_confirmed=true) only after they say yes.
   Follow with analysis_status; when complete, open_results gives a one-time link to CodeSpringApp's
   Results Explorer. Never start a run the user hasn't confirmed in this conversation.
@@ -221,8 +228,23 @@ def list_workflows(assay: str | None = None) -> dict:
         "rule": ("Use a BSR pipeline when one fits and follow it exactly. Ones marked runnable_from_hub can be "
                  "started from this chat with plan_analysis; the others are run in CodeSpringApp. nf-core "
                  "pipelines are secondary: say they are not BSR's standard and offer request_bsr_review."),
+        "storage": {
+            "rnaseq": ("Writes about 5.6x-9.1x the gzipped FASTQ size (typically 7x; STAR's two BAMs are most "
+                       "of it). check_storage gives the exact range for a dataset and the free space."),
+            "other_pipelines": "Rough sizes only: see 'Storage' in doc:bsr/guidance/codespring-pipelines.",
+            "rule": "Tell the user free space and the expected size range before starting any project.",
+        },
         "guidance": "doc:bsr/guidance/codespring-pipelines",
     }
+
+
+@hub_tool
+def check_storage(dataset_id: str | None = None, fastq_folder: str = "", trim_adapters: bool = True) -> dict:
+    """Call FIRST whenever the user wants to start a new project or analysis. Returns free disk
+    space where their CodeSpringApp results go and, given a registered FASTQ dataset (fastq_folder =
+    sub-folder inside it), the raw data size and the low-typical-high range BSR's bulk RNA-seq
+    pipeline is expected to write, with a verdict (enough / tight / not enough). Tell the user."""
+    return runs.check_storage(current_user(), dataset_id, fastq_folder, trim_adapters)
 
 
 @hub_tool
@@ -238,7 +260,8 @@ def plan_analysis(dataset_id: str, project_name: str, species: str, design: list
     inside it, if any); the sample design as rows {"sample", grouping columns..., "filename"
     ("R1,R2" for paired-end)} or design_file (a design_matrix.txt inside the dataset); species
     human or mouse; compare = {"column", "reference", "comparison"} for DESeq2;
-    pathway_geneset from list_workflows' rnaseq_options. Then show the plan and ask the user."""
+    pathway_geneset from list_workflows' rnaseq_options. The plan includes "storage" (free space
+    and the expected size range): tell the user about it first, then show the plan and ask them."""
     return runs.plan_analysis(current_user(), dataset_id, project_name, species, fastq_folder=fastq_folder,
                               design=design, design_file=design_file, paired_end=paired_end,
                               genome_version=genome_version, trim_adapters=trim_adapters, adapter=adapter,
@@ -314,8 +337,9 @@ def plan_analysis(dataset_id: str, question: str) -> str:
     return (
         f"I want to answer this question: {question}\n"
         f"Using the registered dataset {dataset_id}.\n\n"
-        "Please: (1) read the lab context and describe the dataset, (2) check list_workflows for a "
-        "matching BSR workflow and prefer it, (3) list assumptions and QC checks, and (4) tell me "
+        "Please: (1) call check_storage and tell me how much space is free and the range this run is "
+        "expected to write, (2) read the lab context and describe the dataset, (3) check list_workflows "
+        "for a matching BSR workflow and prefer it, (4) list assumptions and QC checks, and (5) tell me "
         "plainly if this needs BSR review, offering request_bsr_review."
     )
 
