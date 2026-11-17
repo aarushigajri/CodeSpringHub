@@ -46,7 +46,7 @@ def _role(user, lab) -> str:
     if lab.is_core:
         if is_member(user, lab):
             return "lead" if is_pi(user, lab) else "staff"
-        return "bsr" if can_access_lab(user, lab) else "user"
+        return "bsr" if not lab.onboarded and is_bsr(user) else "user"  # BSR keeps starter pages
     return "pi" if is_pi(user, lab) else "member" if is_member(user, lab) else "bsr"
 
 
@@ -63,6 +63,7 @@ def list_labs(user) -> list[dict]:
             "documents": len(visible_documents(user, lab)),
             "can_edit": can_edit_lab(user, lab),
             "role": _role(user, lab),
+            "yours": is_member(user, lab),  # your own lab, or the core you work in
         }
         if lab.is_core:
             row["sees"] = "shared and internal" if can_access_lab(user, lab) else "shared"
@@ -88,9 +89,23 @@ def _read(path) -> str:
         return ""
 
 
+def cores_guide(user, exclude=None) -> list[dict]:
+    """What every core facility shares with everyone: name, one line, and its shared documents.
+    Added to every lab's context so Claude knows what each core offers without being asked."""
+    out = []
+    for core in sorted((l for l in visible_labs(user).values() if l.is_core and l.id != exclude),
+                       key=lambda c: (c.id != "bsr", not c.onboarded, c.name.lower())):
+        docs = [d for d in visible_documents(user, core) if d.shared and d.category != "context"]
+        out.append({"core_id": core.id, "name": core.name, "description": core.description,
+                    "on_hub": core.onboarded, "website": core.website,
+                    "documents": [{"id": d.id, "title": d.title} for d in docs[:15]]})
+    return out
+
+
 def lab_context(user, lab_id) -> dict:
     lab = require_visible_lab(user, knowledge.load_labs(), lab_id)
-    out = {"documents": [d for d in document_index(user, lab) if d["category"] != "context"]}
+    out = {"documents": [d for d in document_index(user, lab) if d["category"] != "context"],
+           "cores": cores_guide(user, exclude=lab.id)}
     if not lab.is_core:
         return {"context": _read(lab.dir / "context.md"), **out}
     out = {"kind": "core", "context": _read(lab.dir / knowledge.SHARED_PART / "context.md"), **out,

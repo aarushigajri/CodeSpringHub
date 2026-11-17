@@ -271,3 +271,4 @@ h3 { margin-top: 8px; }
 .nav-cores a { padding-left: 20px; font-size: 0.92rem; }
 .nav-cores .soon { color: var(--muted); }
 .core-head .contacts { margin: 4px 0 0; }
+.nav-empty { padding: 4px 10px; }

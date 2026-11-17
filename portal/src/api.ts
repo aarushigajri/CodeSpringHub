@@ -112,6 +112,7 @@ export type Lab = {
   can_edit: boolean;
   role: "member" | "pi" | "bsr" | "staff" | "lead" | "user";
   kind?: "lab" | "core";
+  yours?: boolean;
   sees?: string;
   on_hub?: boolean;
   website?: string;

@@ -53,7 +53,7 @@ export default function DocumentEditor({ ctx, labId, relPath, suggestion }: {
 
   const isCore = lab?.kind === "core";
   const coreArea = isCore ? (relPath.startsWith("internal/") ? "internal" : relPath.startsWith("shared/") ? "shared" : null) : null;
-  const backHref = isCore ? `#/lab/${labId}/${coreArea === "internal" || relPath.match(/^(members|private)\//) ? "internal" : "shared"}`
+  const backHref = isCore ? `#/${lab?.yours ? "lab" : "core"}/${labId}/${coreArea === "internal" || relPath.match(/^(members|private)\//) ? "internal" : "shared"}`
     : relPath === "context.md" ? `#/lab/${labId}/about` : `#/lab/${labId}/documents`;
   const personalMatch = relPath.match(/^members\/([^/]+)\/(.+)\.md$/);
   const privateMatch = relPath.match(/^private\/([^/]+)\/(.+)\.md$/);

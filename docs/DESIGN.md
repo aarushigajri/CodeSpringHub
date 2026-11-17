@@ -698,6 +698,12 @@ scripts) and things only their own staff should see. A core is a folder in `know
 - `list_labs` returns the person's labs, then the cores (BSR first) with `kind`, `sees`
   ("shared" or "shared and internal"), `on_hub`, `website` and `contacts`. Search covers every
   core's shared section; a core's internal section only for its staff.
+- Every lab's context (`get_lab_context`) ends with a guide to all the cores: each one's name, one
+  line, whether it's on the Hub, and its shared documents. So Claude knows what each core offers
+  (and which protocols to cite) in every conversation, without being asked.
+- Portal: a core's own staff find it under "Your labs" (full view: shared, internal, personal,
+  history). The BSR link and the "Cores" dropdown open the public view (shared section only,
+  read-only) for everyone, the core's own staff included.
 - Each section has its own git history (`shared/.git`, `internal/.git`), so reading the shared
   history reveals nothing internal. BSR's shared section stays in the Hub's own repository; every
   `internal/` folder is git-ignored and never reaches GitHub.
@@ -718,7 +724,8 @@ person can still read `internal/`; IT can hand ownership to the core if wanted).
 taken from CSHL's public core facilities list on 17 Nov 2026; the intranet page needs a login).
 Each gets `kind: core`, no staff group (`on_hub: false`), its website and one-line description,
 and a shared context page with TODO sections (services, how to submit, protocols, data, contacts).
-Everyone sees it, Claude says details may be incomplete, and BSR keeps it until the core joins:
+Everyone sees it, Claude says details may be incomplete, and BSR keeps it until the core joins
+(BSR edits only its shared page; nobody gets an internal view of a core without staff):
 `hub add-core <id> --group <staff group> --lead <user> --contact "Name <email>"`, which hands the
 pages to the core's staff and takes BSR out of the internal section.
 

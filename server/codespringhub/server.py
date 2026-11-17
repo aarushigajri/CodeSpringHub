@@ -47,6 +47,9 @@ Data and documents:
   must never be repeated to anyone else or into anything shared. Core facilities' "/shared/"
   sections are readable by everyone. A core with on_hub false is a starter page: say details may
   be incomplete and point to its website.
+- get_lab_context ends with every CSHL core facility and its shared documents. When a question
+  touches a core's service (sequencing, microscopy, flow, ...), use that core's shared page and
+  protocols and name the core; only its staff can change them, so point others to its contacts.
 
 Analyses:
 - Before proposing any analysis, call list_workflows. BSR's pipelines (CodeSpringApp) come first;
@@ -153,7 +156,27 @@ def get_lab_context(lab_id: str) -> str:
         if "internal_context" in ctx:
             body += f"\n\n---\nINTERNAL (core staff only; never share outside the core):\n{ctx['internal_context']}\n\n{ctx['note']}"
     index = "\n".join(f"- {d['id']}  [{d['category']}, {d['scope']}]  {d['title']}" for d in ctx["documents"])
-    return f"{body}\n\n---\nKnowledge documents (read with read_document):\n{index or '(none)'}"
+    out = f"{body}\n\n---\nKnowledge documents (read with read_document):\n{index or '(none)'}"
+    return out + _cores_text(ctx.get("cores") or [])
+
+
+def _cores_text(cores: list[dict]) -> str:
+    """Every core's shared offer, so Claude can point to the right core and its protocols."""
+    if not cores:
+        return ""
+    lines = ["", "", "---", "CSHL core facilities (shared with every lab; get_lab_context(<core_id>) for a core's full "
+             "shared page, read_document for its documents):"]
+    waiting = []
+    for c in cores:
+        if not c["on_hub"] and not c["documents"]:
+            waiting.append(f"{c['name']} ({c['core_id']})")
+            continue
+        head = f"- {c['name']} ({c['core_id']}): {c['description'] or 'no description yet'}"
+        lines.append(head + ("" if c["on_hub"] else " [not on the Hub yet; see its website]"))
+        lines += [f"    {d['id']}  {d['title']}" for d in c["documents"]]
+    if waiting:
+        lines.append("- Not on the Hub yet (starter pages with a one-line description and website): " + ", ".join(waiting))
+    return "\n".join(lines)
 
 
 # ---- knowledge -----------------------------------------------------------------
