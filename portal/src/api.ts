@@ -13,16 +13,34 @@ function storage(): Storage | null {
 
 let memoryToken: string | null = null;
 
-export function initToken() {
+function keep(value: string) {
+  memoryToken = value;
+  try {
+    storage()?.setItem(KEY, value);
+  } catch {
+    /* private window: keep it in memory */
+  }
+}
+
+// Two kinds of link: the private link printed by portal.sh (#token=...), and a one-time link
+// from Claude's open_portal (#ticket=...), which is swapped for the private link here so the
+// secret itself never appears in a chat.
+export async function initToken() {
+  const ticket = location.hash.match(/ticket=([^&]+)/);
   const m = location.hash.match(/token=([^&]+)/);
-  if (m) {
-    memoryToken = m[1];
+  if (ticket || m) history.replaceState(null, "", location.pathname + "#/");
+  if (m) keep(m[1]);
+  if (ticket) {
     try {
-      storage()?.setItem(KEY, m[1]);
+      const res = await fetch("/api/redeem", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket: decodeURIComponent(ticket[1]) }),
+      });
+      if (res.ok) keep((await res.json()).token);
     } catch {
-      /* private window: keep it in memory */
+      /* fall through: a saved link may still work, otherwise the page explains */
     }
-    history.replaceState(null, "", location.pathname + "#/");
   }
 }
 

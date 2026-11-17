@@ -3,7 +3,7 @@ import { Ctx } from "../App";
 import { ApiError, get } from "../api";
 import { Help, notify } from "../components";
 
-type Info = { user: string; host: string; command: string; claude_desktop: object; notice: string; portal_port: number; portal_command: string; setup_mac: string; setup_windows: string };
+type Info = { user: string; host: string; command: string; claude_desktop: object; notice: string; portal_port: number; codespringapp_port: number; portal_command: string; setup_mac: string; setup_windows: string };
 
 function Copy({ text, label = "Copy" }: { text: string; label?: string }) {
   return (
@@ -156,13 +156,26 @@ export default function Connect({ ctx }: { ctx: Ctx }) {
         </li>
 
         <li>
-          <h3>Optional: open the CodeSpringHub portal</h3>
+          <h3>Open the CodeSpringHub portal from Claude</h3>
           <p>
-            To add data, code or notes yourself, run this in {os === "mac" ? "Terminal" : "PowerShell"}. It logs in,
-            starts your own portal, and prints a private link: open that link in your browser. Keep the window open
-            while you use the portal; close it when you're done.
+            To add data, code or notes yourself, just ask Claude (or choose <strong>Open the CodeSpringHub
+            portal</strong> from the <strong>+</strong> menu under CodeSpringHub):
           </p>
-          <Code text={info.portal_command} />
+          <Code text={`Open CodeSpringHub`} />
+          <p className="muted small">
+            Claude starts your portal on the cluster and gives you a link that works once, for 15 minutes. While Claude
+            Desktop is open, its connection to the cluster also carries your portal (port {info.portal_port}) and
+            CodeSpringApp (port {info.codespringapp_port}) to your laptop, so the link opens directly. Set up before
+            this was added? Run step 3 again.
+          </p>
+          <details className="small">
+            <summary>Without Claude Desktop</summary>
+            <p>
+              Run this in {os === "mac" ? "Terminal" : "PowerShell"}. It logs in, starts your own portal, and prints a
+              private link: open that link in your browser. Keep the window open while you use the portal.
+            </p>
+            <Code text={info.portal_command} />
+          </details>
         </li>
       </ol>
 

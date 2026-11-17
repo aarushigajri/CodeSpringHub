@@ -16,6 +16,7 @@ modes the Hub sets, and the Hub's own checks are tested through these simulated 
 """
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -56,7 +57,8 @@ def hub(tmp_path, monkeypatch):
     (code / "R" / "de.R").write_text("library(DESeq2)\n# alpha-lab differential expression\n")
     (code / "run.sh").write_text("#!/bin/bash\nRscript R/de.R\n")
     ds_yaml = kdir / "bsr" / "datasets.yaml"
-    ds_yaml.write_text(ds_yaml.read_text().replace(str(REPO / "demo_data"), str(data)))
+    # datasets.yaml names the live install's demo_data; point it at the copy whichever clone runs the tests
+    ds_yaml.write_text(re.sub(r"\S*/demo_data(?=/)", str(data), ds_yaml.read_text()))
 
     _lab(kdir, "lab-a", "laba-grp", "Alpha lab studies limb regeneration.")
     _lab(kdir, "lab-b", "labb-grp", "confidential zebrafish secrets")

@@ -10,7 +10,13 @@ with BSR as the first lab. There are two ways in:
 
 ## Start the portal (the easy way)
 
-From your laptop (on CSHL Wi-Fi or VPN), one command. The **Connect Claude** page shows it with
+**From Claude Desktop:** ask *"Open CodeSpringHub"* (or pick **Open the CodeSpringHub portal** from the
+**+** menu). Claude starts your portal on the cluster and gives you a link that works once, for 15
+minutes. The Connect page's Claude Desktop setup also forwards your portal and CodeSpringApp ports over
+the same SSH login, so the link opens directly, on Mac and Windows. Set up before this existed? Run the
+Connect page's step 3 again.
+
+**Without Claude:** from your laptop (on CSHL Wi-Fi or VPN), one command. The **Connect Claude** page shows it with
 your username and port already filled in:
 ```bash
 ssh -t -L <port>:localhost:<port> <you>@bamdev1.cshl.edu /grid/bsr/data/data/bsr_readable_data/CodeSpringHub/portal.sh
@@ -153,6 +159,7 @@ npx @modelcontextprotocol/inspector ./env/bin/codespringhub
 | `plan_analysis`, `start_analysis` | Plan a bulk RNA-seq run with BSR's pipeline, show it, start it only after the user confirms |
 | `analysis_status`, `list_analyses`, `resume_analysis` | Follow (or restart) runs you started from the Hub |
 | `open_results` | One-time link to the run in CodeSpringApp's Results Explorer, plus the SSH tunnel command |
+| `open_portal` | Starts your portal if needed and gives a one-time link to it (the portal secret never enters the chat) |
 | `request_bsr_review` | Open a ticket for a human BSR expert |
 
 ## Safety rules built in
