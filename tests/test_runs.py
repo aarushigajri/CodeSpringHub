@@ -32,21 +32,28 @@ state = (here / "state").read_text().strip() if (here / "state").exists() else "
 def out(x, code=0):
     print(json.dumps(x)); sys.exit(code)
 if cmd == "catalog":
-    out({{"ok": True, "pipelines": [{{"id": "rnaseq", "runnable_from_hub": True}}, {{"id": "atac", "runnable_from_hub": False}}],
+    version = int((here / "spec_version").read_text()) if (here / "spec_version").exists() else 1
+    out({{"ok": True, "spec_version": version, "pipelines": [{{"id": "rnaseq", "runnable_from_hub": True}}, {{"id": "atac", "runnable_from_hub": False}}],
          "rnaseq": {{"references": [], "default_reference": {{}}, "adapters_r1": {{"Illumina Universal TruSeq RNA": "AGATC"}},
                     "features": ["gene_name"], "gsea_genesets": ["MSigDB_Hallmark_2020"], "limits": {{}}}}}})
 if cmd in ("check", "start"):
     if spec["project_name"] == "taken":
         out({{"ok": False, "errors": ["A results folder for 'taken' already exists."]}}, 2)
     plan = {{"pipeline": "rnaseq", "project_id": "rna/" + spec["project_name"], "results_dir": "/r/" + spec["project_name"],
-            "steps": [{{"step": "STAR"}}, {{"step": "DESeq2"}}], "codespringapp": "/x", "codespringlab": "/y"}}
+            "steps": [{{"step": "STAR"}}, {{"step": "DESeq2"}}] + ([{{"step": "GSEA"}}] if spec.get("gsea") else []),
+            "samples": ["c1", "c2"], "groups": {{"group": {{"x": 1, "y": 1}}}}, "reference": "Mouse GRCm39",
+            "codespringapp": "/x", "codespringlab": "/y"}}
     if cmd == "check":
         out({{"ok": True, "plan": plan}})
     out({{"ok": True, "project_id": plan["project_id"], "results_dir": plan["results_dir"]}})
 if cmd == "status":
+    if (here / "status.json").exists():
+        out({{"ok": True, **json.loads((here / "status.json").read_text())}})
     out({{"ok": True, "state": state, "steps": [{{"step": "STAR", "state": "complete"}}], "results_dir": "/r"}})
 if cmd == "resume":
     out({{"ok": True, "resumed": True}})
+if cmd == "continue":
+    out({{"ok": True, "continued": True, "next_step": "STAR"}})
 out({{"ok": False, "errors": "unknown"}}, 2)
 '''
 
@@ -289,7 +296,7 @@ def test_the_plan_leads_with_storage_and_a_run_that_cannot_fit_is_refused(suite,
     p = plan()
     st = p["plan"]["storage"]
     assert st["raw_input"]["fastq_files"] == 1 and "rnaseq_estimate" in st
-    assert p["next"].startswith("Start with storage")
+    assert "Storage" in p["preview"] and "free" in p["preview"] and "/r/exp1" in p["preview"]
     from codespringhub import storage
     monkeypatch.setattr(storage, "free_space", lambda where: {"free_bytes": 10, "free": "10 B"})
     with pytest.raises(HubError, match="Not started"):
@@ -300,5 +307,120 @@ def test_the_plan_leads_with_storage_and_a_run_that_cannot_fit_is_refused(suite,
 def test_claude_is_told_to_talk_about_storage_first():
     from codespringhub import server
     assert "check_storage before anything else" in server.INSTRUCTIONS
+    assert server.INSTRUCTIONS.index("1. check_storage") < server.INSTRUCTIONS.index("2. analysis_options")
     from test_server import call
     assert "free" in call("check_storage")
+
+
+# ---- BSR's Agent: questions, preview, progress ------------------------------------------------------
+
+EMOJI_OR_TICKS = set("\u2705\u2714\u2713\u274c\u2716\u23f3\u2b1c\u23f8\U0001f389\U0001f44d")
+
+
+def _no_symbols(text):
+    return not any(ch in EMOJI_OR_TICKS or ord(ch) >= 0x1F000 for ch in text)
+
+
+def test_analysis_options_asks_the_standard_questions(suite):
+    from test_server import call
+    opts = call("analysis_options")
+    assert opts["greeting"].startswith("Hello! This is BSR's Agent.")
+    q = {x["id"]: x for x in opts["questions"]}
+    assert list(q) == ["pipeline", "pathway_genesets", "extra_quantification", "run_mode"]
+    assert q["pathway_genesets"]["multi_select"] and not q["extra_quantification"]["multi_select"]
+    assert q["extra_quantification"]["options"][0]["label"] == "None, skip this"
+    assert q["extra_quantification"]["options"][0]["value"] == []
+    assert "selection" in opts["how_to_ask"]
+    assert _no_symbols(json.dumps(opts, ensure_ascii=False))
+
+
+def test_preview_is_short_with_full_output_path_and_bsr_support(suite):
+    p = plan()
+    preview = p["preview"]
+    assert preview.startswith("### Your RNA-seq plan")
+    for row in ("**Data**", "**Comparison**", "**Steps**", "**Run mode**", "**Storage**", "**Output**"):
+        assert row in preview
+    assert "`/r/exp1`" in preview and "y vs x" in preview and "2 mouse samples (1 x, 1 y)" in preview
+    assert "Need help? Contact BSR support" in preview
+    for who in ("James Rouse", "rouse@cshl.edu", "Aarushi Gajri", "gajri@cshl.edu", "Rad Utama", "utama@cshl.edu"):
+        assert who in preview
+    assert [o["label"] for o in p["final_prompt"]["options"]] == ["Start pipeline", "Ask for clarification"]
+    assert _no_symbols(preview) and _no_symbols(p["next"])
+
+
+def test_new_options_need_the_updated_codespringapp(suite):
+    with pytest.raises(HubError, match="CodeSpringApp update"):
+        plan(pathway_genesets=["MSigDB_Hallmark_2020", "Reactome_Pathways_2024"])
+    with pytest.raises(HubError, match="CodeSpringApp update"):
+        plan(extra_quantification=["rsem"])
+    with pytest.raises(HubError, match="CodeSpringApp update"):
+        plan(run_mode="step")
+    p = plan(pathway_genesets=["MSigDB_Hallmark_2020"], extra_quantification=["none"])  # works on any version
+    assert calls(suite)[-1]["spec"]["gsea"] == {"geneset": "MSigDB_Hallmark_2020"}
+    assert "quantifiers" not in calls(suite)[-1]["spec"] and "run_mode" not in calls(suite)[-1]["spec"]
+
+
+def test_several_gene_sets_quantifiers_and_step_mode_reach_codespringapp(suite):
+    (suite / "CodeSpringApp" / "bin" / "spec_version").write_text("2")
+    p = plan(pathway_genesets=["MSigDB_Hallmark_2020", "Reactome_Pathways_2024"], extra_quantification=["rsem", "kallisto"],
+             run_mode="step")
+    spec = [c for c in calls(suite) if c["cmd"] == "check"][-1]["spec"]
+    assert spec["gsea"] == {"genesets": ["MSigDB_Hallmark_2020", "Reactome_Pathways_2024"]}
+    assert spec["quantifiers"] == ["rsem", "kallisto"] and spec["run_mode"] == "step"
+    assert "Hallmark 2020, Reactome Pathways 2024" in p["preview"] and "One step at a time" in p["preview"]
+    started = runs.start_analysis(USER, p["plan_id"], user_confirmed=True)
+    assert "stop after each step" in started["say"]
+    with pytest.raises(HubError, match="at most 6"):
+        plan(name="many", pathway_genesets=[f"set{i}" for i in range(7)])
+    with pytest.raises(HubError, match="rsem and/or kallisto"):
+        plan(name="salmon", extra_quantification=["salmon"])
+    with pytest.raises(HubError, match="run_mode"):
+        plan(name="fast", run_mode="fast")
+
+
+def _start(suite, name="exp1"):
+    p = plan(name)
+    return runs.start_analysis(USER, p["plan_id"], user_confirmed=True)["run_id"]
+
+
+def test_progress_is_one_line_in_words_and_paused_runs_continue(suite):
+    run_id = _start(suite)
+    status = suite / "CodeSpringApp" / "bin" / "status.json"
+    status.write_text(json.dumps({"state": "running", "results_dir": "/r/exp1", "steps": [
+        {"step": "Cutadapt", "state": "complete"}, {"step": "FastQC", "state": "running", "samples_done": 4, "samples_total": 6},
+        {"step": "STAR", "state": "waiting"}]}))
+    st = runs.analysis_status(USER, run_id)
+    assert st["summary"] == "Done: trimming. Running: quality check (4 of 6 samples). Still to come: alignment."
+    assert _no_symbols(json.dumps(st, ensure_ascii=False))
+    status.write_text(json.dumps({"state": "paused", "paused_after": "FastQC", "results_dir": "/r/exp1", "steps": [
+        {"step": "Cutadapt", "state": "complete"}, {"step": "FastQC", "state": "complete"}, {"step": "STAR", "state": "waiting"}]}))
+    st = runs.analysis_status(USER, run_id)
+    assert st["say"].startswith("Quality check is finished.") and "continue_analysis" in st["next"]
+    cont = runs.continue_analysis(USER, run_id)
+    assert cont["continued"] and cont["say"] == "Going on with alignment. I'll let you know when it's finished."
+    status.write_text(json.dumps({"state": "failed", "error": "STAR ran out of memory", "results_dir": "/r/exp1",
+                                  "steps": [{"step": "STAR", "state": "failed"}]}))
+    assert "Need help? Contact BSR support" in runs.analysis_status(USER, run_id)["say"]
+
+
+def test_waiting_for_progress_returns_when_a_step_changes(suite, tmp_path):
+    run_id = _start(suite)
+    results = tmp_path / "res"
+    (results / "log").mkdir(parents=True)
+    run_file = results / "log" / "codespring_hub_run.json"
+    run_file.write_text(json.dumps({"state": "running", "steps": [{"step": "STAR", "state": "running"}]}))
+    (suite / "CodeSpringApp" / "bin" / "status.json").write_text(json.dumps(
+        {"state": "running", "results_dir": str(results), "steps": [{"step": "STAR", "state": "running"}]}))
+    import threading
+    threading.Timer(1.0, lambda: run_file.write_text(json.dumps(
+        {"state": "running", "steps": [{"step": "STAR", "state": "complete"}]}))).start()
+    t0 = time.time()
+    runs.analysis_status(USER, run_id, wait_seconds=45)
+    assert time.time() - t0 < 15  # returned on the change, not after the full wait
+
+
+def test_run_tool_errors_and_review_requests_point_to_bsr_support(suite):
+    from test_server import call
+    out = call("start_analysis", plan_id="plan-0000000000000000", user_confirmed=True)["error"]
+    assert "No such plan" in out and "Need help? Contact BSR support" in out
+    assert "rouse@cshl.edu" in str(call("request_bsr_review", lab_id="lab-a", summary="question"))
