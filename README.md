@@ -182,3 +182,4 @@ npx @modelcontextprotocol/inspector ./env/bin/codespringhub
 - **Phase 2:** HTTPS service with CSHL SSO (OAuth), per-user file access on a shared host, PostgreSQL,
   added as a custom connector in Claude Enterprise.
 - **Phase 3:** the three pilot labs, BSR review loop, usage dashboard.
+
