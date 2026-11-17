@@ -272,6 +272,18 @@ def test_a_personal_codespringapp_is_not_closed_to_open_results(suite, monkeypat
     runs.start_analysis(USER, plan()["plan_id"], user_confirmed=True)
     out = runs.open_results(USER, "rna/exp1")
     assert out["link"] is None and "exp1" in out["how_to_open"] and "Results Explorer" in out["how_to_open"]
+    assert runs.open_app(USER)["link"] is None
+
+
+def test_open_app_gives_one_link_to_codespringapp_itself(suite, monkeypatch, tmp_path):
+    from codespringhub import editing
+    monkeypatch.setattr(runs, "_app_home", lambda: tmp_path)
+    monkeypatch.setattr(runs, "_running_app", lambda: (31804, True))
+    monkeypatch.setattr(runs, "ports_forwarded", lambda: True)
+    monkeypatch.setattr(editing, "codespringapp_port", lambda u: 31804)
+    out = runs.open_app(USER)
+    assert out["link"].startswith("http://localhost:31804/?ticket=") and "project=" not in out["link"]
+    assert out["say"].startswith(f"**[Open CodeSpringApp]({out['link']})**") and not out["needs_tunnel"]
 
 
 # ---- storage --------------------------------------------------------------------------------------
@@ -325,8 +337,7 @@ def test_the_plan_leads_with_storage_and_a_run_that_cannot_fit_is_refused(suite,
 
 def test_claude_is_told_to_talk_about_storage_first():
     from codespringhub import server
-    assert "check_storage before anything else" in server.INSTRUCTIONS
-    assert server.INSTRUCTIONS.index("1. check_storage") < server.INSTRUCTIONS.index("2. analysis_options")
+    assert server.INSTRUCTIONS.index("check_storage, analysis_options") < server.INSTRUCTIONS.index("plan_analysis (")
     from test_server import call
     assert "free" in call("check_storage")
 
@@ -381,7 +392,7 @@ def test_start_gives_a_live_link_and_says_when_a_tunnel_is_needed(suite, monkeyp
     monkeypatch.setattr(runs, "_running_app", lambda: (31804, True))
     monkeypatch.setattr(runs, "ports_forwarded", lambda: False)
     started = runs.start_analysis(USER, plan()["plan_id"], user_confirmed=True)
-    assert "**Watch it live in CodeSpringApp:** [open the progress page](http://localhost:31804/?ticket=" in started["say"]
+    assert "[Open the live progress page in CodeSpringApp](http://localhost:31804/?ticket=" in started["say"]
     assert "view=progress" in started["say"] and "ssh -N -L 31804:localhost:31804" in started["say"]
     assert started["live_progress"]["needs_tunnel"] is True
     # Started over the Connect page's SSH login, on the person's own port: no tunnel step.

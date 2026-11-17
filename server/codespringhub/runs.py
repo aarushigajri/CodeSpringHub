@@ -371,11 +371,7 @@ def start_analysis(user, plan_id, user_confirmed=False) -> dict:
         live = None
     if live and live.get("link"):
         out["live_progress"] = live
-        say += f"\n\n**Watch it live in CodeSpringApp:** [open the progress page]({live['link']})"
-        if live.get("needs_tunnel"):
-            say += (" (first run this on your laptop, on CSHL Wi-Fi or VPN, and leave it open: "
-                    f"`{live['tunnel_command']}`)")
-        say += ". The link works once, for 15 minutes; ask me for a new one any time."
+        say += "\n\nYou can watch it live in CodeSpringApp. " + live["say"]
     out["say"] = say
     out["next"] = "Show `say` as is. " + _follow_rule() + " " + agent.STYLE
     return out
@@ -687,13 +683,27 @@ def open_results(user, run_id, view="results") -> dict:
     if running and not running[1]:
         # Their own CodeSpringApp checkout is open. Starting the shared one would close it (the
         # launcher stops a person's other instances), and older checkouts can't open project links.
-        return {
-            "link": None,
-            "how_to_open": (f"Your own CodeSpringApp is already running (port {running[0]}). In it, choose RNA-seq, "
-                            f"then project '{run_id.split('/', 1)[1]}', then the Results Explorer tab. Or close it "
-                            "and ask again for a direct link."),
-        }
-    port = running[0] if running else _start_app()
+        how = (f"Your own CodeSpringApp is already running (port {running[0]}). In it, choose RNA-seq, "
+               f"then project '{run_id.split('/', 1)[1]}', then the Results Explorer tab. Or close it "
+               "and ask again for a direct link.")
+        return {"link": None, "how_to_open": how, "say": how}
+    what = {"results": "this run in CodeSpringApp", "progress": "the live progress page in CodeSpringApp",
+            "logs": "this run's logs in CodeSpringApp"}[view]
+    return _app_link(user, running[0] if running else _start_app(), f"&project={run_id}&view={view}", what)
+
+
+def open_app(user) -> dict:
+    """A one-time link to CodeSpringApp itself (no particular run), starting it if needed."""
+    _require_self(user)
+    running = _running_app()
+    if running and not running[1]:
+        how = (f"Your own CodeSpringApp is already running on the cluster (port {running[0]}); open it the way you "
+               "usually do, or close it and ask again for a direct link.")
+        return {"link": None, "how_to_open": how, "say": how}
+    return _app_link(user, running[0] if running else _start_app(), "", "CodeSpringApp")
+
+
+def _app_link(user, port, query, what) -> dict:
     tickets = _app_home() / "open_tickets"
     tickets.mkdir(parents=True, exist_ok=True)
     os.chmod(tickets, 0o700)
@@ -713,10 +723,13 @@ def open_results(user, run_id, view="results") -> dict:
     else:
         how = ("First run the tunnel command in a terminal on your laptop (CSHL Wi-Fi or VPN) and leave it open; "
                f"then click the link within {minutes} minutes. The link works once; ask again for a new one.")
+    link = f"http://localhost:{port}/?ticket={ticket}{query}"
+    tunnel = f"ssh -N -L {port}:localhost:{port} {user}@{host}"
     return {
-        "link": f"http://localhost:{port}/?ticket={ticket}&project={run_id}&view={view}",
+        "say": agent.link_say(what, link, minutes, tunnel, not forwarded),
+        "link": link,
         "needs_tunnel": not forwarded,
-        "tunnel_command": f"ssh -N -L {port}:localhost:{port} {user}@{host}",
+        "tunnel_command": tunnel,
         "how_to_open": how,
     }
 
