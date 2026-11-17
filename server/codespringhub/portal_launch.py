@@ -18,7 +18,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import config, editing, identity
+from . import agent, config, editing, identity
 from .errors import Forbidden, HubError
 
 
@@ -81,16 +81,24 @@ def open_portal(user: str) -> dict:
     host = config.CONNECT_HOST or editing._laptop_hostname()
     tunnel = f"ssh -N -L {port}:localhost:{port} {user}@{host}"
     usual = editing.portal_port(user)
-    if port == usual:
-        how = (f"Click the link (within {minutes} minutes; it works once). If Claude Desktop was set up from the "
-               "Connect page, it opens straight away. If the page doesn't load, run the tunnel command in a "
+    from .runs import ports_forwarded  # runs imports this module
+    needs_tunnel = not (port == usual and ports_forwarded())
+    if not needs_tunnel:
+        how = (f"Click the link (within {minutes} minutes; it works once). It opens straight away through the "
+               "Connect page's Claude Desktop setup. If the page doesn't load, run the tunnel command in a "
                "terminal on your laptop (CSHL Wi-Fi or VPN), leave it open, and ask for a new link.")
-    else:
+    elif port != usual:
         how = (f"Your portal is on port {port} instead of your usual {usual} (something else was using it), so "
                "first run the tunnel command in a terminal on your laptop and leave it open, then click the link "
                f"within {minutes} minutes. It works once.")
+    else:
+        how = ("First run the tunnel command in a terminal on your laptop (CSHL Wi-Fi or VPN) and leave it open; "
+               f"then click the link within {minutes} minutes. It works once.")
+    link = f"http://localhost:{port}/#ticket={ticket}"
     return {
-        "link": f"http://localhost:{port}/#ticket={ticket}",
+        "say": agent.link_say("CodeSpringHub", link, minutes, tunnel, needs_tunnel),
+        "link": link,
+        "needs_tunnel": needs_tunnel,
         "started_now": started,
         "expires_in_minutes": minutes,
         "how_to_open": how,

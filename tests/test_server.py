@@ -144,3 +144,11 @@ def test_acting_user_reaches_the_tools():
                 return await c.call_tool("whoami", {})
 
     assert json.loads(asyncio.run(go()).content[0].text)["user"] == "root"
+
+
+def test_instructions_fit_what_claude_clients_pass_on():
+    """Claude Code cuts server instructions at about 4,096 characters, so every rule must fit."""
+    from codespringhub import server
+    assert len(server.INSTRUCTIONS) < 4000
+    for rule in ("BSR's Agent", "open_portal", "open_app", "open_results", "`say`"):
+        assert rule in server.INSTRUCTIONS

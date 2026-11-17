@@ -80,12 +80,24 @@ def test_open_portal_gives_a_one_time_link_not_the_secret(hub, monkeypatch):
     usual = editing.portal_port(USER)
     monkeypatch.setattr(portal_launch, "running_portal", lambda: usual)
     monkeypatch.setattr(portal_launch, "start_portal", lambda: pytest.fail("already running"))
+    from codespringhub import runs
+    monkeypatch.setattr(runs, "ports_forwarded", lambda: True)
     secret = LocalLinkAuth(new_link=True).token
     out = portal_launch.open_portal(USER)
     assert out["link"].startswith(f"http://localhost:{usual}/#ticket=") and secret not in json.dumps(out)
-    assert not out["started_now"] and "straight away" in out["how_to_open"]
+    assert not out["started_now"] and "straight away" in out["how_to_open"] and not out["needs_tunnel"]
+    assert out["say"].startswith(f"**[Open CodeSpringHub]({out['link']})**")
     assert out["tunnel_command"].startswith(f"ssh -N -L {usual}:localhost:{usual} {USER}@")
     assert identity.redeem_ticket(out["link"].split("ticket=")[1]) is True
+
+
+def test_open_portal_puts_the_tunnel_first_when_nothing_forwards_the_port(hub, monkeypatch):
+    from codespringhub import runs
+    monkeypatch.setattr(portal_launch, "running_portal", lambda: editing.portal_port(USER))
+    monkeypatch.setattr(runs, "ports_forwarded", lambda: False)  # e.g. Claude Code on the cluster
+    out = portal_launch.open_portal(USER)
+    assert out["needs_tunnel"] and out["say"].startswith("First run this")
+    assert out["say"].index(out["tunnel_command"]) < out["say"].index(out["link"])
 
 
 def test_open_portal_starts_the_portal_when_needed_and_says_when_the_port_moved(hub, monkeypatch):
@@ -114,7 +126,7 @@ def test_claude_can_call_open_portal_and_the_prompt_is_listed(hub, monkeypatch):
     async def prompts():
         async with Client(mcp) as c:
             return [p.name for p in (await c.list_prompts()).prompts]
-    assert "open_portal" in asyncio.run(prompts())
+    assert {"open_portal", "open_app"} <= set(asyncio.run(prompts()))
 
 
 # ---- Claude Desktop's SSH login carries the ports ------------------------------------------

@@ -34,6 +34,16 @@ ABOUT = (
 GREETING = (HELLO + "\n\n" + ABOUT + "\n\nFirst, a few quick questions. Nothing runs until you've seen the full "
             "plan and said go.")
 
+def link_say(what: str, link: str, minutes: int, tunnel_command: str, needs_tunnel: bool) -> str:
+    """The one standard way a Hub link is shown: a clickable link first. The tunnel command leads only
+    when this Hub's SSH login doesn't forward the port, because then the link can't load without it."""
+    text = f"**[Open {what}]({link})** (works once, within {minutes} minutes; ask me for a new one any time)."
+    if needs_tunnel:
+        return ("First run this in a terminal on your laptop (CSHL Wi-Fi or VPN) and leave it open:\n\n"
+                f"`{tunnel_command}`\n\nThen: " + text)
+    return text + f"\n\nIf the page doesn't load, run `{tunnel_command}` on your laptop and ask me for a new link."
+
+
 RNASEQ_SUMMARY = (
     "BSR's RNA-seq pipeline trims adapter sequences from your reads, checks read quality, aligns the reads to the "
     "genome, counts reads per gene, then compares your groups to find differentially expressed genes and looks for "
