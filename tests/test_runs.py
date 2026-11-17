@@ -343,7 +343,8 @@ def _no_symbols(text):
 def test_analysis_options_asks_the_standard_questions(suite):
     from test_server import call
     opts = call("analysis_options")
-    assert opts["greeting"].startswith("Hello! This is BSR's Agent.")
+    assert opts["greeting"].startswith("Hi, this is BSR's Agent! I'll help you run")
+    assert "CodeSpringHub is how I see" in opts["greeting"] and "CodeSpringApp is BSR's pipeline app" in opts["greeting"]
     q = {x["id"]: x for x in opts["questions"]}
     assert list(q) == ["pipeline", "pathway_genesets", "extra_quantification", "run_mode", "email_updates"]
     assert q["email_updates"]["default"] is False and "own CSHL address" in json.dumps(q["email_updates"])
@@ -357,22 +358,48 @@ def test_analysis_options_asks_the_standard_questions(suite):
 def test_preview_is_friendly_with_steps_output_path_and_bsr_support(suite):
     p = plan()
     preview = p["preview"]
-    assert preview.startswith("Hello! This is BSR's Agent. I'm here to help you set up and run the Bioinformatics "
-                              "Shared Resource's RNA-seq pipeline on your data.\n\n**Your answers:** CodeSpringApp "
-                              "pipeline, ")
-    assert "\n\n**Storage:** Results go to `" in preview and "% used)." in preview
-    assert "\n\nI'm BSR's Agent, and your RNA-seq plan is ready! We'll compare y vs x for 2 mouse samples" in preview
-    assert "running all at once on the cluster" in preview and "`/r/exp1`" in preview
-    assert "Here are the steps I'll run:" in preview and "| | Step | Tool | What it does |" in preview
+    assert preview.startswith("**BSR's Agent: your RNA-seq plan is ready.** We'll compare y vs x across 2 mouse "
+                              "samples on GRCm39, running all steps at once under your account.")
+    # Every setting once, in one table; storage appears once, not twice.
+    assert "| Setting | Choice |" in preview and "| Results folder | `/r/exp1` |" in preview
+    assert "| Pathway gene sets | None (no pathway analysis) |" in preview
+    assert "| Email updates | None |" in preview
+    assert preview.count("free") == 1 and preview.count("Storage") == 1
+    assert "**Steps**" in preview and "| | Step | Tool | What it does |" in preview
     for step in p["plan"]["steps"]:
         assert f"| {step['step']} |" in preview
-    assert "If you need any help, reach out to us: " in preview
-    assert preview.endswith("reach out to us: Aarushi Gajri (gajri@cshl.edu), James Rouse (rouse@cshl.edu), "
+    assert preview.endswith("Reach BSR: Aarushi Gajri (gajri@cshl.edu), James Rouse (rouse@cshl.edu), "
                             "or Rad Utama (utama@cshl.edu).")
     assert [o["label"] for o in p["final_prompt"]["options"]] == ["Start pipeline", "Ask for clarification"]
     # The preview must be the turn's last message: a tool call after it lets Claude Desktop fold it away.
     assert "no tool call after" in p["final_prompt"]["how"] and "final message" in p["next"]
     assert _no_symbols(preview) and _no_symbols(p["next"])
+
+
+def test_start_gives_a_live_link_and_says_when_a_tunnel_is_needed(suite, monkeypatch, tmp_path):
+    monkeypatch.setattr(runs, "_app_home", lambda: tmp_path)
+    monkeypatch.setattr(runs, "_running_app", lambda: (31804, True))
+    monkeypatch.setattr(runs, "ports_forwarded", lambda: False)
+    started = runs.start_analysis(USER, plan()["plan_id"], user_confirmed=True)
+    assert "**Watch it live in CodeSpringApp:** [open the progress page](http://localhost:31804/?ticket=" in started["say"]
+    assert "view=progress" in started["say"] and "ssh -N -L 31804:localhost:31804" in started["say"]
+    assert started["live_progress"]["needs_tunnel"] is True
+    # Started over the Connect page's SSH login, on the person's own port: no tunnel step.
+    from codespringhub import editing
+    monkeypatch.setattr(runs, "ports_forwarded", lambda: True)
+    monkeypatch.setattr(editing, "codespringapp_port", lambda u: 31804)
+    link = runs.open_results(USER, "rna/exp1")
+    assert link["needs_tunnel"] is False and link["how_to_open"].startswith("Click the link")
+
+
+def test_an_older_codespringapp_gets_a_plain_message_not_a_usage_line(suite, monkeypatch):
+    exe = suite / "CodeSpringApp" / "bin" / "codespring-run"
+    exe.write_text(exe.read_text().replace('if cmd == "report":', 'if cmd == "report_unsupported":').replace(
+        'out({"ok": False, "errors": "unknown"}, 2)',
+        'out({"ok": False, "errors": "usage: codespring-run catalog | check SPEC.json | status PROJECT_ID"}, 2)'))
+    runs.start_analysis(USER, plan()["plan_id"], user_confirmed=True)
+    with pytest.raises(HubError, match="older than the Hub and has no 'report' command"):
+        runs.analysis_report(USER, "rna/exp1", download_link=False)
 
 
 def test_reference_words_are_short():

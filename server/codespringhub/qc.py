@@ -131,7 +131,7 @@ def fastqc(results: Path, species: str = "") -> dict | None:
     if any(v is not None for v in species_hits):
         headline += f"; {_range(species_hits)} {species or 'expected species'}"
     expected = sorted({m for r in rows for m in r["fail"] + r["warn"] if m in FASTQC_EXPECTED_FOR_RNASEQ})
-    return {"samples": rows, "headline": headline, "flags": flags,
+    return {"samples": rows, "headline": headline, "flags": flags, "species": species,
             "usual_for_rnaseq": expected,
             "note": ("Warnings or failures on the modules in usual_for_rnaseq are normal for RNA-seq libraries "
                      "(random-hexamer priming, highly expressed genes, trimmed read lengths).") if expected else ""}
@@ -264,6 +264,104 @@ def gsea(results: Path) -> dict | None:
 
 PARSERS = {"Cutadapt": cutadapt, "FastQC": fastqc, "STAR": star, "featureCounts": featurecounts,
            "DESeq2": deseq2, "GSEA": gsea}
+
+
+# ---- the standard checks shown for every run ------------------------------------------------------
+#
+# Every run is reported with the same rows, in the same order, against the same BSR guides, so a
+# researcher (and BSR) can compare runs at a glance. "status" is "OK" or "Check" for rows with a guide
+# and "" for rows that are information only. The Hub fills these in; Claude only shows them.
+
+OK, CHECK = "OK", "Check"
+
+
+def _status(values: list, good) -> str:
+    values = [v for v in values if v is not None]
+    if not values:
+        return ""
+    return OK if all(good(v) for v in values) else CHECK
+
+
+def _millions(values: list) -> str:
+    values = [v / 1e6 for v in values if v is not None]
+    if not values:
+        return ""
+    lo, hi = min(values), max(values)
+    return f"{lo:.2f} M" if abs(hi - lo) < 0.005 else f"{lo:.2f}-{hi:.2f} M"
+
+
+def _row(check: str, result: str, guide: str = "", status: str = "") -> dict:
+    return {"check": check, "result": result or "not reported", "guide": guide, "status": status}
+
+
+def checks(step: str, q: dict | None, species: str = "") -> list[dict]:
+    """The standard rows for one finished step's quality (see above)."""
+    if not q:
+        return []
+    rows = q.get("samples") or []
+    col = lambda key: [r.get(key) for r in rows]  # noqa: E731
+    if step == "Cutadapt":
+        unit = rows[0].get("unit", "reads") if rows else "reads"
+        return [
+            _row(f"Input {unit} per sample", _millions(col("reads_in"))),
+            _row(f"{unit[:1].upper() + unit[1:]} kept after trimming", _range(col("kept_pct")),
+                 f"{KEPT_AFTER_TRIMMING_MIN:.0f}% or more",
+                 _status(col("kept_pct"), lambda v: v >= KEPT_AFTER_TRIMMING_MIN)),
+            _row("Reads with adapter", _range(col("adapter_r1_pct") + col("adapter_r2_pct"))),
+        ]
+    if step == "FastQC":
+        unexpected = sorted({m for r in rows for m in r.get("fail", []) if m not in FASTQC_EXPECTED_FOR_RNASEQ})
+        out = [_row("Unexpected FastQC failures", ", ".join(unexpected) or "none", "none",
+                    CHECK if unexpected else OK)]
+        if any(v is not None for v in col("species_pct")):
+            out.append(_row(f"Reads from {species or 'the expected species'} (FastQ Screen)", _range(col("species_pct")),
+                            f"{SPECIES_SCREEN_MIN:.0f}% or more",
+                            _status(col("species_pct"), lambda v: v >= SPECIES_SCREEN_MIN)))
+        if any(v is not None for v in col("rrna_pct")):
+            out.append(_row("rRNA (FastQ Screen)", _range(col("rrna_pct")), f"under {RRNA_SCREEN_MAX:.0f}%",
+                            _status(col("rrna_pct"), lambda v: v <= RRNA_SCREEN_MAX)))
+        out.append(_row("GC content", _range([float(v) for v in col("gc_pct") if v is not None])))
+        return out
+    if step == "STAR":
+        return [
+            _row("Uniquely mapped", _range(col("uniquely_mapped_pct")), f"{UNIQUELY_MAPPED_MIN:.0f}% or more",
+                 _status(col("uniquely_mapped_pct"), lambda v: v >= UNIQUELY_MAPPED_MIN)),
+            _row("Mapped to several places", _range(col("multi_mapped_pct"))),
+            _row("Unmapped", _range(col("unmapped_pct"))),
+        ]
+    if step == "featureCounts":
+        return [
+            _row("Reads assigned to genes", _range(col("assigned_pct")), f"{ASSIGNED_TO_GENES_MIN:.0f}% or more",
+                 _status(col("assigned_pct"), lambda v: v >= ASSIGNED_TO_GENES_MIN)),
+            _row("Assigned reads per sample", _millions(col("assigned"))),
+        ]
+    if step == "DESeq2":
+        out = []
+        for c in q.get("comparisons") or []:
+            name = c["comparison"].replace("_", " ")
+            out.append(_row(f"Genes at FDR 0.05 ({name})", f"{c['significant']} ({c['up']} up, {c['down']} down)",
+                            "", "" if c["significant"] else CHECK))
+            if c.get("top_up"):
+                out.append(_row("Top genes up", ", ".join(c["top_up"])))
+            if c.get("top_down"):
+                out.append(_row("Top genes down", ", ".join(c["top_down"])))
+        return out
+    if step == "GSEA":
+        out = []
+        for lib in q.get("libraries") or []:
+            name = lib["gene_set_library"].replace("MSigDB_", "").replace("_", " ")
+            out.append(_row(f"{name} sets at FDR {GSEA_FDR}", str(lib["significant"])))
+            if lib.get("top_up"):
+                out.append(_row("Top sets up", ", ".join(lib["top_up"])))
+            if lib.get("top_down"):
+                out.append(_row("Top sets down", ", ".join(lib["top_down"])))
+        return out
+    return []
+
+
+def verdict(rows: list[dict], flags: list[str] | None = None) -> str:
+    """'Looks good' unless a guided row or a flag says otherwise."""
+    return "Worth a look" if flags or any(r["status"] == CHECK for r in rows) else "Looks good"
 
 
 def species_of(results: Path) -> str:

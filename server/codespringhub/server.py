@@ -61,22 +61,22 @@ How to work with it:
   2. analysis_options: show its greeting, then ask its questions together, as a selection if you
      have a multiple-choice question tool, otherwise as one short numbered list.
   3. plan_analysis with their answers. Show its `preview` word for word (it already holds the
-     greeting, their answers, storage, the steps table and BSR's contacts) as your final message of the
+     settings, storage, the steps table and BSR's contacts) as your final message of the
      turn, ending with its final_prompt ("Start pipeline" / "Ask for clarification") in plain words.
      Do not use a selection tool or any other tool call after the preview: some apps (Claude
      Desktop) fold text written before a tool call into a short summary, hiding the plan.
   4. start_analysis(plan_id, user_confirmed=true) only after they pick "Start pipeline" or clearly
-     say yes. Never start a run the user hasn't confirmed in this conversation.
-  5. Follow it with analysis_status(wait_seconds=45). When a step finishes, report its quality
-     from `quality` (the steps in `just_finished`: key numbers, whether they look good, any sample
-     that stands out), then show `say` (summary and status table). In one-step-at-a-time runs,
-     ask before continue_analysis (user_confirmed=true only after they say go on; RSEM or Kallisto
-     can be added and RSEM/Kallisto/GSEA skipped there). cancel_analysis stops a run at any point,
+     say yes. Never start a run the user hasn't confirmed in this conversation. Show its `say`: it
+     carries the link to watch the run live in CodeSpringApp.
+  5. Follow it with analysis_status(wait_seconds=45). Each result's `say` is exactly what to show:
+     a one-line note when a step finishes, nothing while nothing changed, and at the end the full
+     standard quality report. Show it as given; don't write your own QC summaries or add numbers.
+     Its `next` says what to do. In one-step-at-a-time runs, ask before continue_analysis
+     (user_confirmed=true only after they say go on). cancel_analysis stops a run at any point,
      also only after they confirm. You cannot message the user between turns: if they chose email
-     updates, those come by email; otherwise they ask you. When complete, call analysis_report
-     (show its plots, give its one-time download link for the HTML report, and summarize the DEG
-     counts and top pathways from it, nothing recalculated), and open_results for the Results
-     Explorer.
+     updates, those come by email; otherwise they ask you. When complete, call analysis_report and
+     open_results before writing the final message, so the report and its links are the last thing
+     shown.
 - Show the BSR support contacts (from the tool results) with every plan, finished or failed run,
   and whenever you suggest asking BSR.
 - If the request is novel, uncertain, high-impact, or no BSR workflow fits, say that BSR
@@ -350,12 +350,12 @@ def start_analysis(plan_id: str, user_confirmed: bool = False) -> dict:
 
 @hub_tool
 def analysis_status(run_id: str, wait_seconds: int = 0) -> dict:
-    """Progress of an analysis started from the Hub: a one-line `summary` in words, a status
-    `table` of the steps, each step's state (with samples done for per-sample steps), any error, job counts and next_actions,
-    and `quality`: per-sample QC from each finished step's own reports (reads kept after trimming,
-    FastQC, uniquely mapped %, reads assigned to genes, DE genes, enriched gene sets) with `flags`.
-    `just_finished` names the steps whose quality hasn't been reported yet. With wait_seconds (up
-    to 45) it waits until a step changes before answering, so following a run takes one call per step."""
+    """Progress of an analysis started from the Hub. `say` is the text to show, already in BSR's
+    standard layout: a one-line note per step that just finished, empty while nothing changed (when
+    following with wait_seconds), the status table and quality so far when asked how it's going, and
+    the full quality report (same checks and BSR guides for every run) when it is done. Also the
+    state, one-line `summary`, compact step states, `flags` and `next`. With wait_seconds (up to 45)
+    it waits until a step changes before answering, so following a run takes one call per step."""
     return runs.analysis_status(current_user(), run_id, wait_seconds)
 
 
@@ -402,7 +402,8 @@ def resume_analysis(run_id: str, user_confirmed: bool = False) -> dict:
 @hub_tool
 def open_results(run_id: str, view: str = "results") -> dict:
     """Give the user a one-time link that opens this analysis in CodeSpringApp (view: results =
-    the Results Explorer, progress, or logs), plus the SSH tunnel command to run on their laptop.
+    the Results Explorer, progress, or logs), plus the SSH tunnel command. When needs_tunnel is
+    true, show the tunnel command before the link: the link won't load on their laptop without it.
     Starts their CodeSpringApp on the cluster if it isn't running."""
     return runs.open_results(current_user(), run_id, view)
 
