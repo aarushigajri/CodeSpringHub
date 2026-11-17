@@ -694,3 +694,48 @@ def test_reports_only_for_your_own_runs_and_mid_run_ones_say_so(suite, monkeypat
     with pytest.raises(NotFound):
         runs.analysis_report(USER, "rna/not_mine")
     assert "hasn't finished" in runs.analysis_report(USER, "rna/exp1", download_link=False)["warning"]
+
+
+# ---- whether the laptop has the ports forwarded ---------------------------------------------------
+
+def _fake_proc(tmp_path, procs):
+    """procs: pid -> (comm, parent pid, argv). Written as a /proc-like tree."""
+    proc = tmp_path / "proc"
+    for pid, (comm, ppid, argv) in procs.items():
+        d = proc / str(pid)
+        d.mkdir(parents=True)
+        (d / "comm").write_text(comm + "\n")
+        (d / "stat").write_text(f"{pid} ({comm}) S {ppid} 0 0\n")
+        (d / "cmdline").write_bytes(b"\0".join(a.encode() for a in argv) + b"\0")
+    return proc
+
+
+HUB_ARGV = ["/env/bin/python3.12", "/env/bin/codespringhub"]
+
+
+def test_ports_are_forwarded_when_this_hub_came_from_the_connect_login(tmp_path, monkeypatch):
+    import os
+    monkeypatch.setattr(os, "getpid", lambda: 100)
+    proc = _fake_proc(tmp_path, {100: ("python3.12", 90, HUB_ARGV), 90: ("bash", 80, ["bash"]),
+                                 80: ("sshd", 1, ["sshd: me@notty"])})
+    assert runs.ports_forwarded(proc) is True
+
+
+def test_ports_are_forwarded_when_another_hub_of_ours_came_from_the_connect_login(tmp_path, monkeypatch):
+    # This Hub serves Claude Code (Code tab or on the cluster); the Desktop chat's SSH login is open too.
+    import os
+    monkeypatch.setattr(os, "getpid", lambda: 100)
+    procs = {100: ("python3.12", 90, HUB_ARGV), 90: ("claude", 1, ["claude"]),
+             200: ("python3.12", 190, HUB_ARGV), 190: ("sshd", 1, ["sshd: me@notty"])}
+    assert runs.ports_forwarded(_fake_proc(tmp_path, procs)) is True
+
+
+def test_no_forward_without_a_connect_login(tmp_path, monkeypatch):
+    import os
+    monkeypatch.setattr(os, "getpid", lambda: 100)
+    procs = {100: ("python3.12", 90, HUB_ARGV), 90: ("claude", 1, ["claude"]),
+             200: ("python3.12", 90, HUB_ARGV),  # another Code-tab Hub: no forwards
+             300: ("python3.12", 290, ["/env/bin/python3.12", "/env/bin/codespringhub-portal"]),
+             290: ("sshd", 1, ["sshd: me@pts/0"]),  # the portal in someone's terminal is not the Hub
+             400: ("vim", 390, ["vim"]), 390: ("sshd", 1, ["sshd: me@pts/1"])}
+    assert runs.ports_forwarded(_fake_proc(tmp_path, procs)) is False
