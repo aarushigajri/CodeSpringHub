@@ -2,9 +2,9 @@
 # run, and BSR review request. Hand edits are fine; keep the structure.
 team: Bioinformatics Shared Resource (BSR)
 contacts:
-- name: James Rouse
-  email: rouse@cshl.edu
 - name: Aarushi Gajri
   email: gajri@cshl.edu
+- name: James Rouse
+  email: rouse@cshl.edu
 - name: Rad Utama
   email: utama@cshl.edu

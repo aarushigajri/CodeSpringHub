@@ -28,7 +28,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import agent, config, storage, store
+from . import agent, config, qc, storage, store
 from .errors import Forbidden, HubError, NotFound
 from .hub import get_dataset
 from .permissions import resolve_asset
@@ -256,8 +256,8 @@ def plan_analysis(user, dataset_id, project_name, species, fastq_folder="", desi
         "preview": agent.rnaseq_preview(plan, dataset_id, species, compare, sets, quants, mode),
         "final_prompt": agent.FINAL_PROMPT,
         "plan": plan,
-        "next": ("Show `preview` exactly as given (it is the whole plan, with the full output folder and BSR "
-                 "support), with no extra summary before or after it, then the final_prompt. "
+        "next": ("Show `preview` exactly as given (BSR's Agent's intro, the steps table and how to reach BSR), "
+                 "with no extra summary before or after it, then the final_prompt. "
                  + ("Space is short: before the preview, say so in one sentence and suggest freeing space or "
                     "asking BSR. " if not verdict.startswith("enough") else "")
                  + "Only after they pick 'Start pipeline' (or clearly say yes), call start_analysis with this "
@@ -336,8 +336,8 @@ def start_analysis(user, plan_id, user_confirmed=False) -> dict:
 
 
 def _follow_rule() -> str:
-    return ("To follow the run, call analysis_status with wait_seconds=45: it returns as soon as a step changes, so "
-            "give the person its one-line `summary` each time a step finishes (not on every call). The small example "
+    return ("To follow the run, call analysis_status with wait_seconds=45: it returns as soon as a step changes. "
+            "Each time a step finishes (not on every call), report its quality and show `say`. The small example "
             "dataset takes 15-20 minutes. For real datasets (hours), after the first step finishes stop following "
             "it: give the open_results progress link and say they can ask 'how's my run?' any time. When it is "
             "complete, give the open_results link to the Results Explorer.")
@@ -390,26 +390,61 @@ def analysis_status(user, run_id, wait_seconds=0) -> dict:
     steps = [{k: s.get(k) for k in ("step", "state", "what", "started", "finished", "message", "samples_done",
                                     "samples_total") if s.get(k) is not None} for s in st.get("steps", [])]
     state = st.get("state")
+    quality, just_finished = _quality(run_id, st.get("results_dir"), steps)
+    table = agent.status_table(steps, quality)
     out = {
         "run_id": run_id, "state": state, "summary": agent.progress_line(steps), "error": st.get("error"),
-        "steps": steps, "results_folder": st.get("results_dir"), "updated": st.get("updated"),
+        "steps": steps, "table": table, "quality": quality, "just_finished": just_finished,
+        "results_folder": st.get("results_dir"), "updated": st.get("updated"),
     }
+    report = _report_rule(just_finished)
     if state == "paused":
         finished = agent.STEP_WORDS.get(st.get("paused_after"), st.get("paused_after") or "That step")
-        out["say"] = f"{finished[:1].upper() + finished[1:]} is finished. {out['summary']}"
-        out["next"] = ("Tell the person in a sentence or two how that step went, then ask with a single-choice "
-                       "selection: 'Continue to the next step' (then call continue_analysis), 'Stop here for now' or "
-                       "'Ask for clarification'. " + agent.STYLE)
+        out["say"] = f"{finished[:1].upper() + finished[1:]} is finished. {out['summary']}\n\n{table}"
+        out["next"] = (report + "Show `say`, then ask with a single-choice selection: 'Continue to the next step' "
+                       "(then call continue_analysis), 'Stop here for now' or 'Ask for clarification'. " + agent.STYLE)
     elif state in ("failed", "stopped"):
-        out["say"] = agent.with_support(f"The run stopped with a problem. {out['summary']}")
-        out["next"] = ("Explain the error in plain words, offer resume_analysis if it looks temporary, and show the "
-                       "BSR support block from `say`. " + agent.STYLE)
+        out["say"] = agent.with_support(f"The run stopped with a problem. {out['summary']}\n\n{table}")
+        out["next"] = ("Explain the error in plain words, offer resume_analysis if it looks temporary, and show "
+                       "`say` (it has the BSR support block). " + report + agent.STYLE)
     elif state == "complete":
-        out["say"] = agent.with_support("All done. Your results are ready.")
-        out["next"] = "Call open_results and give the link with `say`. " + agent.STYLE
+        out["say"] = agent.with_support(f"All done. Your results are ready.\n\n{table}")
+        out["next"] = (report + "Then show `say`, call open_results and give its link. " + agent.STYLE)
     else:
-        out["next"] = _follow_rule()
+        out["say"] = f"{out['summary']}\n\n{table}"
+        out["next"] = (report + "Show `say` each time a step finishes (not on every call). " + _follow_rule())
     return out
+
+
+def _quality(run_id: str, results_dir, steps: list[dict]) -> tuple[dict, list[str]]:
+    """QC for every finished step, and which of them haven't been reported to the person yet."""
+    quality = {}
+    for s in steps:
+        if s.get("state") == "complete" and (q := qc.step_qc(results_dir, s.get("step"))):
+            quality[s["step"]] = q
+    records = _run_records()
+    just_finished = []
+    for r in records:
+        if r["run_id"] == run_id:
+            seen = set(r.get("qc_reported") or [])
+            just_finished = [step for step in quality if step not in seen]
+            if just_finished:
+                r["qc_reported"] = sorted(seen | set(just_finished))
+                _save_runs(records)
+            break
+    return quality, just_finished
+
+
+def _report_rule(just_finished: list[str]) -> str:
+    if not just_finished:
+        return ""
+    names = ", ".join(agent.STEP_WORDS.get(s, s) for s in just_finished)
+    return (f"Before anything else, report on what just finished ({names}) from `quality`: in two to four plain "
+            "sentences per step, give the key numbers (range across samples), say whether they look good for bulk "
+            "RNA-seq, and name any sample that stands out from the others or appears in `flags`. FastQC modules in "
+            "usual_for_rnaseq are normal for RNA-seq; say so briefly rather than as a problem. For DESeq2 and GSEA "
+            "name a few top genes or gene sets. These are rules of thumb, not a verdict: if something looks off, "
+            "suggest checking with BSR. ")
 
 
 def list_analyses(user) -> list[dict]:

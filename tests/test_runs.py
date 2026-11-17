@@ -296,7 +296,7 @@ def test_the_plan_leads_with_storage_and_a_run_that_cannot_fit_is_refused(suite,
     p = plan()
     st = p["plan"]["storage"]
     assert st["raw_input"]["fastq_files"] == 1 and "rnaseq_estimate" in st
-    assert "Storage" in p["preview"] and "free" in p["preview"] and "/r/exp1" in p["preview"]
+    assert "free" in p["preview"] and "/r/exp1" in p["preview"]
     from codespringhub import storage
     monkeypatch.setattr(storage, "free_space", lambda where: {"free_bytes": 10, "free": "10 B"})
     with pytest.raises(HubError, match="Not started"):
@@ -334,18 +334,25 @@ def test_analysis_options_asks_the_standard_questions(suite):
     assert _no_symbols(json.dumps(opts, ensure_ascii=False))
 
 
-def test_preview_is_short_with_full_output_path_and_bsr_support(suite):
+def test_preview_is_friendly_with_steps_output_path_and_bsr_support(suite):
     p = plan()
     preview = p["preview"]
-    assert preview.startswith("### Your RNA-seq plan")
-    for row in ("**Data**", "**Comparison**", "**Steps**", "**Run mode**", "**Storage**", "**Output**"):
-        assert row in preview
-    assert "`/r/exp1`" in preview and "y vs x" in preview and "2 mouse samples (1 x, 1 y)" in preview
-    assert "Need help? Contact BSR support" in preview
-    for who in ("James Rouse", "rouse@cshl.edu", "Aarushi Gajri", "gajri@cshl.edu", "Rad Utama", "utama@cshl.edu"):
-        assert who in preview
+    assert preview.startswith("I'm BSR's Agent, and your RNA-seq plan is ready! We'll compare y vs x for 2 mouse samples")
+    assert "running all at once on the cluster" in preview and "`/r/exp1`" in preview
+    assert "Here are the steps I'll run:" in preview and "| | Step | Tool | What it does |" in preview
+    for step in p["plan"]["steps"]:
+        assert f"| {step['step']} |" in preview
+    assert "If you need any help, reach out to us: " in preview
+    assert preview.endswith("reach out to us: Aarushi Gajri (gajri@cshl.edu), James Rouse (rouse@cshl.edu), "
+                            "or Rad Utama (utama@cshl.edu).")
     assert [o["label"] for o in p["final_prompt"]["options"]] == ["Start pipeline", "Ask for clarification"]
     assert _no_symbols(preview) and _no_symbols(p["next"])
+
+
+def test_reference_words_are_short():
+    from codespringhub import agent
+    assert agent._reference_words("Mouse GRCm39 / GENCODE M39", "mouse") == "GRCm39"
+    assert agent._reference_words("Human GRCh38 / GENCODE 47", "human") == "GRCh38"
 
 
 def test_new_options_need_the_updated_codespringapp(suite):
@@ -367,7 +374,8 @@ def test_several_gene_sets_quantifiers_and_step_mode_reach_codespringapp(suite):
     spec = [c for c in calls(suite) if c["cmd"] == "check"][-1]["spec"]
     assert spec["gsea"] == {"genesets": ["MSigDB_Hallmark_2020", "Reactome_Pathways_2024"]}
     assert spec["quantifiers"] == ["rsem", "kallisto"] and spec["run_mode"] == "step"
-    assert "Hallmark 2020, Reactome Pathways 2024" in p["preview"] and "One step at a time" in p["preview"]
+    assert "running one step at a time" in p["preview"]
+    assert "Hallmark 2020, Reactome Pathways 2024" in p["preview"]
     started = runs.start_analysis(USER, p["plan_id"], user_confirmed=True)
     assert "stop after each step" in started["say"]
     with pytest.raises(HubError, match="at most 6"):
