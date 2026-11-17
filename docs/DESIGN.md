@@ -387,7 +387,7 @@ and a git failure is logged (`portal:history_not_recorded`) instead of blocking 
 | Portal access | SSH tunnel + private link | `https://codespringhub.cshl.edu` (or similar), SSO login, no tunnel |
 | MCP endpoint | stdio | mounted on the same app at `/mcp` |
 | Group lookup | `getgrouplist` | same, via the host's LDAP/NSS |
-| File permission check | `os.access` as the user | **open decision:** (a) a small helper run as the user through a narrowly scoped `sudo` rule, which is strongest; or (b) the service account's read access plus an explicit POSIX ACL check for the user, which is simpler but weaker |
+| File permission check | `os.access` as the user | **open decision:** (a) a small helper run as the user through a narrowly scoped `sudo` rule, which is strongest; or (b) the service account's read access plus an explicit ACL check for the user (NFSv4 on /grid), which is simpler but weaker |
 | Database | SQLite | PostgreSQL (+ pgvector for meaning-based search) |
 | Network | none | HTTPS behind a CSHL reverse proxy, only Anthropic's published IP ranges allowed |
 | Enterprise setup | – | org Owner adds a custom connector pointing to the Hub URL |
@@ -422,15 +422,19 @@ setup, plus SSH-key steps for Mac and Windows (Claude can't type a password).
 
 ### 12.1 Who sees what
 
-| | Lab-shared items | Personal items | Usage logs |
-|---|---|---|---|
-| Lab member | read and edit | only their own | their own |
-| Lab PI (`knowledge/roles.yaml`) | read and edit | their own **and their members'** (read) | their own |
-| BSR staff (`bioinformatics`) | read and edit **every** lab's (support role) | **no** (not authorised) | **everyone's**, with personal details withheld |
-| Other labs | nothing | nothing | nothing |
+| | Lab-shared items | Personal items (me + PI) | Private items (only me) | Usage logs |
+|---|---|---|---|---|
+| Lab member | read and edit | only their own | only their own | their own |
+| Lab PI (`knowledge/roles.yaml`) | read and edit | their own **and their members'** (read) | only their own | their own |
+| BSR staff (`bioinformatics`) | read and edit **every** lab's (support role) | **no** (not authorised) | **no** | **everyone's**, with personal and private details withheld |
+| Other labs | nothing | nothing | nothing | nothing |
 
 - **Personal items** (datasets, code, documents) live in `knowledge/<lab>/members/<user>/` and have
   Hub IDs containing `/~<user>/`. The structure is ready for richer PI and lab-member account types later.
+- **Private items** (added 17 Nov 2026) are for things a member wants to keep even from their PI. They
+  live in `knowledge/<lab>/private/<user>/`, a separate folder with its own git history (a PI who can
+  read `members/<user>/.git` can't reach them), and have Hub IDs containing `/~<user>/private/`. The
+  portal offers three choices wherever something is created: the whole lab, me and my PI, only me.
 - **PIs come only from `knowledge/roles.yaml`**, which only BSR can write (`hub set-pis`). A lab member
   editing their own `lab.yaml` cannot make themselves PI.
 - **Code resources** (`kind: code`): Claude can read source files in full (`read_code_file`, size-capped),
@@ -438,14 +442,27 @@ setup, plus SSH-key steps for Mac and Windows (Claude can't type a password).
 - **Consent:** connecting means usage is shared with BSR. The Connect page, the `whoami`/`list_labs`
   replies and Claude's instructions all say so; the first time it's shown is recorded per person.
 
-### 12.2 How the filesystem enforces it (POSIX ACLs on GPFS)
+### 12.2 How the filesystem enforces it (NFSv4 ACLs on GPFS)
+
+`/grid` is GPFS with **NFSv4 ACL semantics** (`mmlsfs grid -k` → `nfs4`), so `setfacl` fails there with
+"Operation not supported". The Hub sets ACLs with GPFS's own `mmputacl`/`mmgetacl`, which any file owner
+may run (`acl.py`); on other filesystems (and in most tests) it uses POSIX ACLs. Found and fixed 17 Nov
+2026; before that only BSR's own folder existed, so nothing had gone wrong.
+
+**GPFS catch:** a `chmod` *replaces* an NFSv4 ACL with one built from the mode bits. This always fails
+closed (extra access disappears; nothing is opened up) and `hub check` reports it. The Hub's own code
+therefore never chmods inside a folder that passes on an ACL (`acl.inherits`), and git runs there
+without `core.sharedRepository` (whose chmod would do the same). Researchers should not chmod inside
+`knowledge/`; if one does, the owner re-saving in the portal re-applies their own folder's ACL.
 
 | Path | Access |
 |---|---|
 | `knowledge/` | BSR rwx; each pilot lab group r-x (list labs, read `workflows.yaml`, `roles.yaml`) |
 | `knowledge/<lab>/` | BSR (owning group) + lab group rwx, inherited by everything created inside |
 | `knowledge/<lab>/.git` | the lab's own history; inherits the lab folder's access; never pushed |
-| `knowledge/<lab>/members/<user>/` | `2700` with inherited ACLs **removed**; plus `u:<pi>:rwx` per PI. Its own `.git` inside. Re-secured on every personal save, so PI changes take effect on the owner's next save |
+| `knowledge/<lab>/members/`, `private/` | lab group and BSR may **add** a folder (no delete or rename: sticky, and no delete right), nothing inherited inside |
+| `knowledge/<lab>/members/<user>/` | owner + `user:<pi>:rwx` per PI, inherited; the lab's and BSR's access **removed**. Its own `.git` inside. Re-secured on every personal save, so PI changes take effect on the owner's next save |
+| `knowledge/<lab>/private/<user>/` | owner only, inherited; no PI, no lab, no BSR. Its own `.git` inside |
 | `var/` | BSR; pilot lab groups `--x` only |
 | `var/events/` | `3770` (setgid + **sticky**); pilot lab groups `-wx`, so each person can create their log but can't list, read, delete or rename anyone else's. No default ACLs |
 | `var/events/<user>.db` | `640`, no ACLs. Readers trust a row only if the file's owner *is* that user (a forged `ann.db` is ignored) |
@@ -453,9 +470,9 @@ setup, plus SSH-key steps for Mac and Windows (Claude can't type a password).
 **Why per-lab git repositories:** git stores full copies of every file. One shared repository would let
 anyone who can read `.git` read every lab's files, including personal ones. It would also push lab
 knowledge to GitHub. The main repository's `.gitignore` now keeps all labs except BSR out
-(`knowledge/*/`, `!knowledge/bsr/`, `members/`, `_suggestions/`, `roles.yaml`).
+(`knowledge/*/`, `!knowledge/bsr/`, `members/`, `private/`, `_suggestions/`, `roles.yaml`).
 
-**Why logs are withheld at write time:** BSR can read the log files directly, so personal details are
+**Why logs are withheld at write time:** BSR can read the log files directly, so personal and private details are
 replaced with `{"details": "withheld: personal resource"}` *before* they're written, not just hidden in
 the portal. Lab-shared usage keeps full details (search words, dataset IDs) for the pilot evaluation.
 
@@ -551,7 +568,16 @@ Claude ──MCP──▶ Hub (runs.py) ──▶ codespring-run (CodeSpringApp,
 | Only BSR pipelines, references, adapter presets, gene sets and options; no custom commands, runner paths, adapters or result folders | `codespring-run check` (CodeSpringApp) |
 | Results only in the person's CodeSpringApp results root; an existing results folder is never cleared | CodeSpringApp |
 | Sample names, column names and file names validated (no shell characters, no paths); every read file must exist | CodeSpringApp |
-| Max 96 samples per run; DESeq2 needs ≥2 replicates per group | CodeSpringApp |
+| Max 96 samples per run (BSR can change it: `CSL_HUB_MAX_SAMPLES` in the shared install); DESeq2 needs ≥2 replicates per group | CodeSpringApp |
+| Per-sample jobs are submitted in **waves** under the person's Slurm submit limit (read from their QOS; 2 slots kept free) | CodeSpringApp controller |
+| Extra quantification only from the app's own RSEM and Kallisto; at most 6 gene sets, all from BSR's list; only RSEM, Kallisto and GSEA can be skipped, and only before they run | CodeSpringApp + Hub |
+| Email updates only if the person chose them, only to `<their user>@cshl.edu` (no address can be given), at most hourly summaries | CodeSpringApp |
+| Cancel stops only this run: the controller is signalled only after checking `/proc/<pid>/cmdline` names this run's spec file (never a reused pid), and only job ids recorded in this project's job history are cancelled (no job-name sweep: `a.b` and `a_b` share a prefix) | CodeSpringApp |
+| Nothing from the status file reaches a shell; the stored request is re-checked by the controller before it runs | CodeSpringApp |
+| Waves fail closed: if `squeue` can't be asked, nothing is submitted; after 12 h without free slots, or an hour without a readable job list, the run stops with a message (resume later) | CodeSpringApp controller |
+| Starting, continuing and resuming all count against the 3-runs limit; a run on another login node being cancelled shows `cancelling` until its controller stops | Hub + CodeSpringApp |
+| Continuing and resuming (submit more work) and cancelling need the person's go-ahead in the chat (`user_confirmed`), like starting | Hub |
+| Paused runs don't count towards the 3-runs limit (they hold no cluster resources) | Hub |
 | Inputs must be Hub-registered **data** the person can see (lab-shared, or their own personal); files can't escape the dataset | Hub |
 | Nothing runs without a plan the user saw and confirmed; plans are single-use, expire after 2 h, are tamper-checked, and belong to one person | Hub |
 | A run can only start under the account of the person asking | Hub |
@@ -562,16 +588,65 @@ Claude ──MCP──▶ Hub (runs.py) ──▶ codespring-run (CodeSpringApp,
 
 Claude Desktop also asks the person before each tool call unless they allow it permanently.
 
-### 13.3 Updating the shared install
+### 13.3 Step by step, optional steps, QC, cancel, emails (built 17 Nov 2026)
+
+- **Modes.** `run_mode` `all` runs every step in turn; `step` makes the controller stop after each step with
+  state `paused` (it exits: a pause holds nothing and can last days). `continue_analysis` relaunches
+  it, optionally adding RSEM/Kallisto (`quantifiers`), skipping RSEM, Kallisto or GSEA, or switching
+  run mode. RSEM/Kallisto can also be added to a finished run. Steps run in BSR's order (Cutadapt,
+  FastQC, STAR, featureCounts, DESeq2, GSEA, then RSEM and Kallisto). Several gene sets (up to 6)
+  run as one GSEApy job each. These names come from main's spec version 2 (James, 17 Nov), which
+  this work was merged onto.
+- **Waves.** For per-sample steps the controller submits as many samples as the person's free Slurm
+  submit slots allow (QOS `MaxSubmitPU` or the association's `MaxSubmit`, minus jobs already queued,
+  minus 2), then more as slots free up. CodeSpringApp's own submit functions skip samples that are
+  done or already queued, so a wave never duplicates work. A matrix-build job held back while earlier
+  waves were still running is submitted by one finishing pass once every sample is done.
+- **QC** (`codespring-run qc`, `analysis_qc`) reads each tool's own output: Cutadapt and featureCounts
+  through the app's metric readers, STAR's `Log.final.out`, FastQC's `summary.txt` inside each report
+  zip, Kallisto's `run_info.json`. No thresholds are applied (BSR to decide; see §14).
+- **Cancel** writes a cancel flag (a controller on another node stops at its next check and marks
+  the run `cancelled`; until then it shows `cancelling`), stops a local controller's process group
+  after verifying it really is this run's controller, and cancels each step's recorded active jobs
+  with the app's `cancel_active_step_jobs`. Every controller exit clears its pid. `resume` carries on.
+- **Reviewed** 17 Nov 2026 by an independent review pass: stale-pid kills, the job-name-prefix
+  sweep, shell injection via the status file, double controllers after a remote cancel, the run
+  limit being bypassable through continue/resume, and waves that could wait forever were all found
+  and fixed, with tests.
+- **Emails** (optional) are sent by the controller with the cluster's `mail` to the person's own
+  address: when a step finishes, fails or pauses, when the run ends or is cancelled, and optionally
+  a summary every N hours. Claude itself can't send updates between turns.
+
+### 13.4 The post-run report packet (built 17 Nov 2026)
+
+- `codespring-run report` (CodeSpringApp `R/hub_report.R`) writes one self-contained HTML page to
+  `<results>/report/<project>_codespring_report.html`. The controller makes it when a run finishes
+  (and the "finished" email gives its path); `analysis_report` rebuilds it on request, also mid-run.
+- It only gathers CodeSpringApp's own outputs, recalculating nothing: steps, a per-sample QC table
+  (the same numbers as `analysis_qc`), the DESeq2 step's PNGs (PCA, volcano, MA), DEG counts and
+  top genes from DESeq2's FDR < 0.05 list, GSEApy's top pathways and dot plots, and the app's
+  methods text and tool table.
+- Plots and small files (DEG lists, design, GSEA tables, normalized counts, featureCounts summary,
+  QC CSV) are embedded as downloads. Size caps: 5 MB per data file, 15 MB per page, 30 plots
+  (`CSL_HUB_REPORT_FILE_MB`, `CSL_HUB_REPORT_MAX_MB`). Anything bigger (count/Kallisto/RSEM matrices)
+  is listed with its cluster path. All text from result files is HTML-escaped; the page loads
+  nothing from the internet.
+- In the chat, `analysis_report` returns a summary, up to 6 of the plots as images, and a
+  **one-time download link** for the HTML served by the person's own portal
+  (`/api/download/<ticket>`: the ticket file, in their 700 `~/.codespringhub/download-tickets/`,
+  names the file; it works once, expires with other links, and only `*_codespring_report.html`
+  files are ever served). `open_results` remains the way into the full, interactive results.
+
+### 13.5 Updating the shared install
 
 BSR updates `CodeSpringSuite` deliberately, after tests pass (`tests/run_all.sh` in CodeSpringApp;
 `pytest` here). During development it was synced from the `feature/hub-bridge` worktree; once James
 merges the branch, replace it with clones pinned to a commit of each repository.
 
-### 13.4 Not yet
+### 13.6 Not yet
 
 - ATAC, ChIP, CUT&RUN, single-cell, Sarek and FetchNGS still start from CodeSpringApp only.
-- A run started from Claude is followed with `analysis_status`; there's no notification yet.
+- The report packet isn't linked from CodeSpringApp's own Results Explorer yet.
 - The controller lives on the login node it was started on (`bamdev1`), like the app's own.
 
 ---
@@ -594,3 +669,5 @@ merges the branch, replace it with clones pinned to a commit of each repository.
 | 10 | Git remote: personal GitHub vs. CSHL/BSR organization | Aarushi | now |
 | 13 | James reviews and merges CodeSpringApp `feature/hub-bridge`; then pin the shared install to that commit | James + BSR | before onboarding |
 | 14 | HPC admins OK with small Hub run controllers on the login node (same pattern as CodeSpringApp's Sarek) | BSR + HPC admins | before onboarding |
+| 15 | QC cut-offs to flag in chat (e.g. STAR uniquely mapped %), if any; today only tools' own numbers and FastQC's flags are shown | BSR | before pilot |
+| 16 | Largest run from Claude (now 96 samples, batched) | BSR | before pilot |

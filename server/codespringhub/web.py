@@ -15,7 +15,7 @@ import socket
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from mcp import Client
 from mcp.server.mcpserver.exceptions import ToolError
@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 from . import editing, hub, knowledge
 from .errors import HubError
-from .identity import get_auth
+from .identity import get_auth, redeem_download
 from .permissions import acting_as, display_name, is_bsr, require_lab
 from .server import mcp
 
@@ -253,6 +253,16 @@ def create_app(auth=None) -> FastAPI:
         texts = [c.text for c in result.content if getattr(c, "text", None) is not None]
         return {"is_error": result.is_error, "content": texts,
                 "characters": sum(len(t) for t in texts)}
+
+    @app.get("/api/download/{ticket}")
+    def download(ticket: str):
+        """A one-time link from Claude (analysis_report) for one file: no login, the ticket is the proof.
+        Only report packets are ever served this way."""
+        target = redeem_download(ticket)
+        if target is None or not target.name.endswith("_codespring_report.html"):
+            return JSONResponse({"detail": "This download link has expired or was already used. Ask Claude for "
+                                           "the report again to get a new one."}, status_code=404)
+        return FileResponse(target, media_type="text/html", filename=target.name)
 
     @app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
     def api_not_found(rest: str):

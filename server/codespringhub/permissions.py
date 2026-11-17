@@ -82,10 +82,13 @@ def can_access_lab(user: str, lab: Lab) -> bool:
     return is_member(user, lab) or is_bsr(user)
 
 
-def can_see(user: str, lab: Lab, owner: str | None) -> bool:
-    """Personal content (owner set): only the owner and the lab's PIs. Never BSR as such."""
+def can_see(user: str, lab: Lab, owner: str | None, private: bool = False) -> bool:
+    """Personal content (owner set): only the owner and the lab's PIs. Private content: only the
+    owner. Never BSR as such."""
     if owner is None:
         return can_access_lab(user, lab)
+    if private:
+        return user == owner
     return user == owner or (is_pi(user, lab) and is_member(user, lab))
 
 

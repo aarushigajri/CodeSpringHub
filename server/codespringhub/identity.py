@@ -98,6 +98,53 @@ def redeem_ticket(ticket: str | None) -> bool:
     return expires >= time.time()
 
 
+# ---- one-time download links -------------------------------------------------------------
+# Same idea for a single file (a run's report packet): the ticket file also names the file. The
+# portal serves it once, without the portal secret, so a chat can hand out a plain download link.
+
+def _download_dir():
+    d = config.USER_DIR / "download-tickets"
+    d.mkdir(parents=True, exist_ok=True)
+    os.chmod(config.USER_DIR, 0o700)
+    os.chmod(d, 0o700)
+    return d
+
+
+def issue_download(path, ttl_seconds: int | None = None) -> str:
+    import json
+    d = _download_dir()
+    now = time.time()
+    for old in d.iterdir():
+        try:
+            if json.loads(old.read_text())["expires"] < now:
+                old.unlink()
+        except (OSError, ValueError, KeyError, TypeError):
+            old.unlink(missing_ok=True)
+    ticket = secrets.token_urlsafe(32)
+    fd = os.open(d / ticket, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(json.dumps({"path": str(path), "expires": now + (ttl_seconds or config.OPEN_LINK_TTL_SECONDS)}))
+    return ticket
+
+
+def redeem_download(ticket: str | None):
+    """The file a download ticket names, or None. Works once."""
+    import json
+    from pathlib import Path
+    if not ticket or not TICKET.fullmatch(ticket):
+        return None
+    path = _download_dir() / ticket
+    try:
+        data = json.loads(path.read_text())
+        path.unlink()
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("expires", 0) < time.time():
+        return None
+    target = Path(data.get("path", ""))
+    return target if target.is_file() else None
+
+
 class OIDCAuth:
     """Placeholder for CSHL SSO (Phase 2). Needs from IT: issuer URL, client ID, the claim
     that holds the CSHL username, and the redirect URL registered for the portal."""
