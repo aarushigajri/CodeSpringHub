@@ -36,6 +36,7 @@ from .hub import get_dataset
 from .permissions import resolve_asset
 
 PLAN_ID = re.compile(r"^plan-[a-f0-9]{16}$")
+PROJECT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")  # CodeSpringApp's own rule (HUB_NAME_RE)
 RUN_ID = re.compile(r"^rna/[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 FINISHED = {"complete", "failed", "stopped", "cancelled"}
 ACTIVE = {"queued", "running", "cancelling"}  # "paused" waits for the person and holds no cluster resources
@@ -210,6 +211,10 @@ def plan_analysis(user, dataset_id, project_name, species, fastq_folder="", desi
                   extra_quantification=None, run_mode="all", email_updates=False, email_every_hours=0) -> dict:
     _require_self(user)
     pipelines.require(user, "rnaseq")  # BSR decides which pipelines labs may start themselves
+    project_name = (project_name or "").strip()
+    if not PROJECT_NAME.match(project_name):
+        raise HubError("That project name can't be used: it needs 1-64 letters, numbers, '.', '_' or '-', starting "
+                       "with a letter or number. Ask the person to type another name; don't pick one for them.")
     sets, quants, mode = _choices(pathway_geneset, pathway_genesets, extra_quantification, run_mode)
     if _needs_new_runner(sets, quants, mode, bool(email_updates)) and _cli("catalog").get("spec_version", 1) < 2:
         raise HubError("Several gene sets, RSEM/Kallisto and one-step-at-a-time runs need a CodeSpringApp update that "
@@ -250,7 +255,13 @@ def plan_analysis(user, dataset_id, project_name, species, fastq_folder="", desi
     if email_updates:
         # Only to the person's own CSHL address (CodeSpringApp decides it; no address can be given).
         spec["notify"] = {"email": True, "every_hours": email_every_hours or 0}
-    plan = _cli("check", spec=spec)["plan"]
+    try:
+        plan = _cli("check", spec=spec)["plan"]
+    except HubError as e:
+        if "already exists" in str(e):
+            raise HubError(f"{e}\n\nThere's already a project called '{project_name}'. Ask the person to type a "
+                           "different project name; don't pick one for them.") from e
+        raise
     plan.pop("codespringapp", None)
     plan.pop("codespringlab", None)
     plan["input"] = {"dataset": dataset_id, "folder": fastq_folder or "(whole dataset)"}
@@ -372,6 +383,8 @@ def start_analysis(user, plan_id, user_confirmed=False) -> dict:
     if live and live.get("link"):
         out["live_progress"] = live
         say += "\n\nYou can watch it live in CodeSpringApp. " + live["say"]
+    say += ("\n\nIf the project doesn't show up in CodeSpringApp yet, refresh the app's page in your browser; "
+            "a page that was already open only picks up new projects when it reloads.")
     out["say"] = say
     out["next"] = "Show `say` as is. " + _follow_rule() + " " + agent.STYLE
     return out

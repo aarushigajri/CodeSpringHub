@@ -326,6 +326,7 @@ def list_workflows(assay: str | None = None) -> dict:
                  "you_can_use false is one BSR runs for labs (access 'internal', e.g. single-cell): say so, offer "
                  "request_bsr_review, and don't guide them through running it. nf-core pipelines are secondary: "
                  "say they are not BSR's standard and offer request_bsr_review."),
+        "project_name": agent.PROJECT_NAME_RULE,
         "storage": {
             "rnaseq": ("Writes about 5.6x-9.1x the gzipped FASTQ size (typically 7x; STAR's two BAMs are most "
                        "of it). check_storage gives the exact range for a dataset and the free space."),
@@ -340,8 +341,9 @@ def list_workflows(assay: str | None = None) -> dict:
 def analysis_options(assay: str = "rna-seq", dataset_id: str | None = None) -> dict:
     """Call FIRST when someone wants to run a pipeline, before writing anything else. Returns BSR's
     Agent greeting (show it as your first words), what the pipeline does, and the standard questions
-    (pipeline, pathway gene sets, extra quantification, run mode, emails) with their options and
-    defaults. Ask them all together, as a selection if you can. Then check_storage, then plan_analysis."""
+    (project name, typed by the person and asked first; then pipeline, pathway gene sets, extra
+    quantification, run mode, emails) with their options and defaults. Ask the project name on its own,
+    then the rest together, as a selection if you can. Then check_storage, then plan_analysis."""
     if not pipelines.can_use(current_user(), "rnaseq"):
         return {"runnable": False, "support": agent.support(),
                 "next": ("BSR runs bulk RNA-seq for this lab rather than it being started from a chat: offer "
@@ -362,8 +364,9 @@ def analysis_options(assay: str = "rna-seq", dataset_id: str | None = None) -> d
         "how_to_ask": agent.HOW_TO_ASK,
         "style": agent.STYLE,
         "next": ("Write nothing before the greeting: show it word for word as your first words, then ask the "
-                 "questions. Once they're answered, find the dataset if you don't have it (list_labs, list_datasets) "
-                 "and call check_storage with it. Then plan_analysis with "
+                 "project_name question on its own and wait for the name they type, then the other questions. "
+                 "Once they're answered, find the dataset if you don't have it (list_labs, list_datasets) and call "
+                 "check_storage with it. Then plan_analysis with project_name exactly as they typed it, "
                  "pathway_genesets, extra_quantification, run_mode and email_updates from the answers (species, "
                  "comparison and design come from the dataset); its preview carries the storage and both links."),
     }
@@ -422,7 +425,8 @@ def plan_analysis(dataset_id: str, project_name: str, species: str, design: list
                   email_updates: bool = False, email_every_hours: int = 0) -> dict:
     """Plan a bulk RNA-seq run with BSR's pipeline (CodeSpringApp: cutadapt, FastQC, STAR,
     featureCounts, DESeq2, optional GSEApy, optional RSEM/Kallisto). Checks everything and returns
-    the exact plan; nothing is submitted. Inputs: a registered dataset holding the FASTQs
+    the exact plan; nothing is submitted. project_name: the name the person typed for analysis_options'
+    first question, unchanged (never one you made up). Inputs: a registered dataset holding the FASTQs
     (fastq_folder = sub-folder inside it, if any); the sample design as rows {"sample", grouping
     columns..., "filename" ("R1,R2" for paired-end)} or design_file (a design_matrix.txt inside the
     dataset); species human or mouse; compare = {"column", "reference", "comparison"} for DESeq2.

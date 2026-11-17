@@ -94,12 +94,32 @@ RNASEQ_SUMMARY = (
 )
 
 HOW_TO_ASK = (
-    "Show the greeting, then ask all of these questions together as a selection if you have a multiple-choice "
-    "question tool (in Claude Code, AskUserQuestion with every question in one call; use multiSelect where "
-    "multi_select is true and put each option's description in the option). Otherwise ask them as one short "
-    "numbered list with the default marked. Don't add questions of your own; the reference genome, comparison and "
-    "project name come from the dataset and appear in the preview, where the person can ask to change them."
+    "Show the greeting, then ask the project_name question first, on its own and in plain words (not a "
+    "selection tool), and wait for the name the person types. Never suggest, invent or change a project name "
+    "yourself, including when one is taken: ask them for another. Once they've named it, ask the remaining "
+    "questions together as a selection if you have a multiple-choice question tool (in Claude Code, "
+    "AskUserQuestion with every remaining question in one call; use multiSelect where multi_select is true and "
+    "put each option's description in the option). Otherwise ask them as one short numbered list with the "
+    "default marked. Don't add questions of your own; the reference genome and comparison come from the dataset "
+    "and appear in the preview, where the person can ask to change them."
 )
+
+PROJECT_NAME_RULE = (
+    "Every CodeSpringHub pipeline run needs a project name the person types in themselves (it names the results "
+    "folder and the project in CodeSpringApp): ask for it before any other choice such as pathway gene sets, and "
+    "never make one up."
+)
+
+
+def project_name_question(pipeline_words: str = "this analysis") -> dict:
+    """The typed question every Hub pipeline asks first: the project name, in the person's own words."""
+    return {"id": "project_name", "header": "Project", "type": "text", "multi_select": False,
+            "question": (f"What would you like to call {pipeline_words}? Type a project name: letters, numbers, "
+                         "'.', '_' or '-', up to 64 characters, starting with a letter or number."),
+            "options": [], "default": None,
+            "note": ("Ask in plain words and wait for their typed answer; pass it unchanged as project_name. "
+                     "If it's taken or not allowed, plan_analysis says so: ask them for another.")}
+
 
 FINAL_PROMPT = {
     "question": "Ready to go?",
@@ -165,6 +185,7 @@ def rnaseq_questions(genesets: list[str] | None = None) -> list[dict]:
     available = list(genesets or FEATURED_GENESETS)
     featured = [g for g in FEATURED_GENESETS if g in available] or available[:4]
     return [
+        project_name_question("this RNA-seq project"),
         {"id": "pipeline", "header": "Pipeline", "multi_select": False,
          "question": "Which pipeline would you like to use?",
          "options": [
