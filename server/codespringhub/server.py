@@ -52,13 +52,15 @@ Data and documents:
   protocols and name the core; only its staff can change them, so point others to its contacts.
 
 Analyses:
-- Before proposing any analysis, call list_workflows. BSR's pipelines (CodeSpringApp) come first;
+- Before proposing any analysis, call list_workflows (to run bulk RNA-seq, analysis_options covers
+  it). BSR's pipelines (CodeSpringApp) come first;
   follow them exactly, without other tools, references, parameters, scripts or ad-hoc Slurm.
   Mention nf-core only when no BSR pipeline fits, and say it is not BSR's standard.
-- To run one (bulk RNA-seq so far), in this order: check_storage, analysis_options (show its
-  greeting, ask its questions together), plan_analysis (show `preview` word for word as your last
-  message, no tool call after it), start_analysis only after the user says "Start pipeline" or yes,
-  then analysis_status(wait_seconds=45). Every result's `next` says what to do; follow it. Never
+- To run one (bulk RNA-seq so far), in this order: 1. analysis_options before anything else: its
+  greeting is your first words, then ask its questions together. 2. Find their dataset.
+  3. check_storage with it: show its `say` (storage, then the CodeSpringHub and CodeSpringApp links).
+  4. plan_analysis: show `preview` word for word as your last message, no tool call after it.
+  5. start_analysis only after the user says "Start pipeline" or yes. 6. analysis_status(wait_seconds=45). Every result's `next` says what to do; follow it. Never
   start, continue, resume or cancel a run without the user's yes in this conversation.
 - If the request is novel, uncertain, high-impact or no BSR pipeline fits, say BSR expertise is
   needed and offer request_bsr_review. Show the BSR contacts whenever you suggest asking BSR.
@@ -278,10 +280,10 @@ def list_workflows(assay: str | None = None) -> dict:
 
 @hub_tool
 def analysis_options(assay: str = "rna-seq", dataset_id: str | None = None) -> dict:
-    """Call after check_storage when someone wants to run a pipeline, before plan_analysis. Returns
-    BSR's Agent greeting, what the pipeline does, and the standard questions to ask (pipeline,
-    pathway gene sets, extra quantification, run mode) with their options and defaults. Ask them
-    all together, as a selection if you can, and pass the answers to plan_analysis."""
+    """Call FIRST when someone wants to run a pipeline, before writing anything else. Returns BSR's
+    Agent greeting (show it as your first words), what the pipeline does, and the standard questions
+    (pipeline, pathway gene sets, extra quantification, run mode, emails) with their options and
+    defaults. Ask them all together, as a selection if you can. Then check_storage, then plan_analysis."""
     if not pipelines.can_use(current_user(), "rnaseq"):
         return {"runnable": False, "support": agent.support(),
                 "next": ("BSR runs bulk RNA-seq for this lab rather than it being started from a chat: offer "
@@ -301,8 +303,11 @@ def analysis_options(assay: str = "rna-seq", dataset_id: str | None = None) -> d
         "questions": agent.rnaseq_questions(opts.get("pathway_genesets")),
         "how_to_ask": agent.HOW_TO_ASK,
         "style": agent.STYLE,
-        "next": ("Then call plan_analysis with pathway_genesets, extra_quantification and run_mode from the answers "
-                 "(species, comparison and design come from the dataset)."),
+        "next": ("Write nothing before the greeting: show it word for word as your first words, then ask the "
+                 "questions. Once they're answered, find the dataset if you don't have it (list_labs, list_datasets) "
+                 "and call check_storage with it; it gives the storage check and the links. Then plan_analysis with "
+                 "pathway_genesets, extra_quantification, run_mode and email_updates from the answers (species, "
+                 "comparison and design come from the dataset)."),
     }
     if dataset_id:
         out["dataset_id"] = dataset_id
@@ -311,11 +316,41 @@ def analysis_options(assay: str = "rna-seq", dataset_id: str | None = None) -> d
 
 @hub_tool
 def check_storage(dataset_id: str | None = None, fastq_folder: str = "", trim_adapters: bool = True) -> dict:
-    """Call FIRST whenever the user wants to start a new project or analysis. Returns free disk
-    space where their CodeSpringApp results go and, given a registered FASTQ dataset (fastq_folder =
-    sub-folder inside it), the raw data size and the low-typical-high range BSR's bulk RNA-seq
-    pipeline is expected to write, with a verdict (enough / tight / not enough). Tell the user."""
-    return runs.check_storage(current_user(), dataset_id, fastq_folder, trim_adapters)
+    """Call once the analysis_options questions are answered, with the dataset, before plan_analysis
+    (or any time someone asks about space). Returns free disk space where their CodeSpringApp results
+    go and, given a registered FASTQ dataset (fastq_folder = sub-folder inside it), the raw data size,
+    the low-typical-high range BSR's bulk RNA-seq pipeline writes and a verdict, plus one-time links
+    to CodeSpringHub and CodeSpringApp. Show `say` word for word."""
+    user = current_user()
+    out = runs.check_storage(user, dataset_id, fastq_folder, trim_adapters)
+    say = agent.storage_say(out)
+    if dataset_id:  # starting a project: give the links to both apps now, not only once a run starts
+        links = _project_links(user)
+        if links:
+            say += ("\n\nHere are your links. CodeSpringHub shows your lab's data and BSR's guidance; "
+                    "CodeSpringApp is where your run will show up.\n\n" + links)
+    out["say"] = say
+    out["next"] = "Show `say` word for word; it already covers the storage and the links."
+    if dataset_id:
+        out["next"] += (" If the verdict isn't 'enough space', stop there: suggest freeing space or asking BSR. "
+                        "Otherwise call plan_analysis next.")
+    return out
+
+
+def _project_links(user: str) -> str:
+    """CodeSpringHub and CodeSpringApp links in one block, starting either if needed. A link that can't be
+    made is left out, so the storage answer always comes back."""
+    items, host = [], ""
+    for what, opener in (("CodeSpringHub", portal_launch.open_portal), ("CodeSpringApp", runs.open_app)):
+        try:
+            got = opener(user)
+        except Exception:  # noqa: BLE001  (e.g. the app isn't installed here; the tools can be asked later)
+            continue
+        host = host or got.get("host", "")
+        items.append({**got, "what": what})
+    if not items:
+        return ""
+    return agent.links_say(items, user, host, config.OPEN_LINK_TTL_SECONDS // 60)
 
 
 @hub_tool
