@@ -23,7 +23,7 @@ import yaml
 
 from . import acl, config, knowledge, store
 from .errors import Forbidden, HubError, NotFound
-from .permissions import (can_access_lab, can_edit_lab, can_see, display_name, is_bsr, is_member, require_lab,
+from .permissions import (can_access_lab, can_edit_area, can_edit_lab, can_see, display_name, is_bsr, is_member, require_lab,
                           require_lab_editor, require_member, require_visible_lab)
 
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -263,12 +263,19 @@ def read_document_file(user, lab_id, rel_path) -> dict:
             "scope": "private" if private else "personal" if owner else "shared" if shared else "lab", "owner": owner}
 
 
+def _require_area(user, lab, area: str):
+    """A core's internal section: its staff only (BSR may edit a starter page's shared section only)."""
+    if not can_edit_area(user, lab, area):
+        raise NotFound("That document doesn't exist (it may have been deleted).")
+
+
 def _writable_doc(user, lab_id, rel_path):
     labs = knowledge.load_labs()
     owner, inner, private = _parse_doc_path(rel_path, labs.get(lab_id))
     _check_inner(inner, owner)
     if owner is None:
         lab = require_lab_editor(user, labs, lab_id)
+        _require_area(user, lab, _doc_area(lab, rel_path))
         return lab, lab.dir / rel_path, None, False
     lab = require_lab(user, labs, lab_id)
     if owner != user:
@@ -300,7 +307,7 @@ def create_document(user, lab_id, category: str, title: str, scope: str = "lab")
     if not title.strip():
         raise HubError("Give the document a title.")
     inner = f"{category}/{slugify(title)}.md"
-    lab = require_lab(user, knowledge.load_labs(), lab_id)
+    lab = require_visible_lab(user, knowledge.load_labs(), lab_id)
     area = "" if scope in ("personal", "private") else _area_for(lab, scope)
     rel_path = {"personal": f"members/{user}/{inner}", "private": f"private/{user}/{inner}"}.get(
         scope, f"{area}/{inner}" if area else inner)
@@ -369,7 +376,9 @@ def _split_dataset_id(user, lab, hub_id: str) -> tuple[str, str]:
         raise NotFound("That dataset isn't registered in this lab.")
     if owner is None:
         require_lab_editor(user, {lab.id: lab}, lab.id)
-        return ("shared" if lab.is_core and hub_id.startswith(f"ds:{lab.id}/{knowledge.SHARED_PART}/") else "lab"), short
+        scope = "shared" if lab.is_core and hub_id.startswith(f"ds:{lab.id}/{knowledge.SHARED_PART}/") else "lab"
+        _require_area(user, lab, knowledge.INTERNAL_PART if lab.is_core and scope == "lab" else "")
+        return scope, short
     if owner != user:
         raise Forbidden("Only the owner can change a personal item.")
     return ("private" if knowledge.is_private_id(hub_id) else "personal"), short
@@ -378,7 +387,7 @@ def _split_dataset_id(user, lab, hub_id: str) -> tuple[str, str]:
 def save_dataset(user, lab_id, entry: dict, original_id: str | None = None) -> str:
     """Register (or update) data or code. entry['scope']: 'lab' (all lab members), 'personal'
     (you and your PI) or 'private' (only you)."""
-    lab = require_lab(user, knowledge.load_labs(), lab_id)
+    lab = require_visible_lab(user, knowledge.load_labs(), lab_id)
     if original_id:
         scope, original_short = _split_dataset_id(user, lab, original_id)
     else:
@@ -386,8 +395,9 @@ def save_dataset(user, lab_id, entry: dict, original_id: str | None = None) -> s
         if scope not in SCOPES:
             raise HubError(WHO_CAN_SEE)
         if scope in ("lab", "shared"):
-            _area_for(lab, scope)
+            area = _area_for(lab, scope)
             require_lab_editor(user, {lab.id: lab}, lab.id)
+            _require_area(user, lab, area)
     title = (entry.get("title") or "").strip()
     if not title:
         raise HubError("Give it a short title, e.g. 'Mouse WGS, 12 samples' or 'RNA-seq analysis scripts'.")
@@ -434,7 +444,7 @@ def save_dataset(user, lab_id, entry: dict, original_id: str | None = None) -> s
 
 
 def delete_dataset(user, lab_id, hub_id):
-    lab = require_lab(user, knowledge.load_labs(), lab_id)
+    lab = require_visible_lab(user, knowledge.load_labs(), lab_id)
     scope, short = _split_dataset_id(user, lab, hub_id)
     path = _datasets_file(user, lab, scope)
     entries = _load_entries(path)

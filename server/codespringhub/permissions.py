@@ -101,9 +101,10 @@ def is_pi(user: str, lab: Lab) -> bool:
 
 def can_access_lab(user: str, lab: Lab) -> bool:
     """Lab-shared content: the lab's members, plus BSR, who support every pilot lab. A core's
-    internal section: its staff only (BSR keeps the template of a core not on the Hub yet)."""
+    internal section: its staff only. A core that isn't on the Hub yet has no staff, so nobody sees
+    an internal view of it (BSR only edits its shared starter page; see can_edit_lab)."""
     if lab.is_core:
-        return is_member(user, lab) or (not lab.onboarded and is_bsr(user))
+        return is_member(user, lab)
     return is_member(user, lab) or is_bsr(user)
 
 
@@ -125,9 +126,19 @@ def can_see(user: str, lab: Lab, owner: str | None, private: bool = False, share
 
 
 def can_edit_lab(user: str, lab: Lab) -> bool:
-    """Lab members (and BSR) can edit lab-shared knowledge. The filesystem has the final
-    say: the process must also be able to write the lab folder."""
+    """Lab members (and BSR) can edit lab-shared knowledge; a core's staff its pages; BSR the shared
+    starter page of a core that isn't on the Hub yet. The filesystem has the final say: the process
+    must also be able to write the folder."""
+    if lab.is_core and not lab.onboarded:
+        return is_bsr(user) and os.access(lab.dir / "shared", os.W_OK)
     return can_access_lab(user, lab) and os.access(lab.dir, os.W_OK)
+
+
+def can_edit_area(user: str, lab: Lab, area: str) -> bool:
+    """A core's internal section is for its staff only, even where someone may edit its shared one."""
+    if lab.is_core and area == "internal":
+        return can_access_lab(user, lab) and can_edit_lab(user, lab)
+    return can_edit_lab(user, lab)
 
 
 def require_lab(user: str, labs: dict[str, Lab], lab_id: str) -> Lab:
@@ -148,7 +159,7 @@ def require_visible_lab(user: str, labs: dict[str, Lab], lab_id: str) -> Lab:
 
 
 def require_lab_editor(user: str, labs: dict[str, Lab], lab_id: str) -> Lab:
-    lab = require_lab(user, labs, lab_id)
+    lab = require_visible_lab(user, labs, lab_id)
     if not can_edit_lab(user, lab):
         who = "the core's staff" if lab.is_core else "the lab's Hub contact or BSR"
         raise Forbidden(f"You can view {lab.name} but not edit it. Ask {who} for edit access.")

@@ -17,7 +17,9 @@ export default function Datasets({ ctx, lab, openAdd, onChanged }: {
   const isCore = lab.kind === "core";
 
   async function load() {
-    setRows(await get<Dataset[]>(`/api/labs/${lab.lab_id}/datasets`));
+    const all = await get<Dataset[]>(`/api/labs/${lab.lab_id}/datasets`);
+    // A core's public view shows only what it shares with everyone, even to its own staff.
+    setRows(isCore && !isMember ? all.filter((d) => d.scope === "shared") : all);
   }
   useEffect(() => {
     load();

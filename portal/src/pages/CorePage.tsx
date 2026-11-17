@@ -8,14 +8,21 @@ import { History, NewDocument } from "./LabPage";
 // A core facility (BSR, Sequencing, Microscopy, ...). Everyone sees its shared section; the core's
 // own staff also see its internal section and their personal items.
 
-export default function CorePage({ ctx, lab, tab, query, onChanged }: {
-  ctx: Ctx; lab: Lab; tab: string; query: URLSearchParams; onChanged: () => Promise<void>;
+export default function CorePage({ ctx, lab: full, tab, query, onChanged, publicView }: {
+  ctx: Ctx; lab: Lab; tab: string; query: URLSearchParams; onChanged: () => Promise<void>; publicView?: boolean;
 }) {
-  const staff = isInsider(lab);
+  // Public view: what every lab sees, read-only (BSR may still edit the starter page of a core
+  // that isn't on the Hub yet). The full view, from "Your labs", is for the core's own staff.
+  const lab: Lab = publicView
+    ? { ...full, role: full.role === "bsr" ? "bsr" : "user", can_edit: full.can_edit && full.on_hub === false,
+        documents_list: (full.documents_list ?? []).filter((d) => d.scope === "shared") }
+    : full;
+  const staff = !publicView && isInsider(lab);
+  const base = publicView ? "core" : "lab";
   const tabs: [string, string][] = [["shared", "Shared with everyone"]];
-  if (staff || lab.sees?.includes("internal")) tabs.push(["internal", "Internal"]);
+  if (staff) tabs.push(["internal", "Internal"]);
   tabs.push(["datasets", "Data and code"]);
-  if (staff || lab.sees?.includes("internal")) tabs.push(["history", "History"]);
+  if (staff) tabs.push(["history", "History"]);
   const current = tabs.some(([id]) => id === tab) ? tab : "shared";
 
   return (
@@ -41,12 +48,15 @@ export default function CorePage({ ctx, lab, tab, query, onChanged }: {
             {lab.role === "bsr" && "BSR keeps this starter page until the core joins CodeSpringHub."}
             {lab.role === "user" && "You see what this core shares with every lab. Only its staff can change these pages."}
           </p>
+          {publicView && full.yours && (
+            <p className="callout">This is what every lab sees. <a href={`#/lab/${lab.lab_id}/shared`}>Open your core's full view</a> to edit it or see the internal section.</p>
+          )}
         </div>
         <a className="button" href="#/try">Try it as Claude</a>
       </div>
       <div className="tabs">
         {tabs.map(([id, label]) => (
-          <a key={id} href={`#/lab/${lab.lab_id}/${id}`} className={current === id ? "on" : ""}>{label}</a>
+          <a key={id} href={`#/${base}/${lab.lab_id}/${id}`} className={current === id ? "on" : ""}>{label}</a>
         ))}
       </div>
       {current === "shared" && <Section ctx={ctx} lab={lab} area="shared" openNew={query.get("new") === "1"} onChanged={onChanged} />}

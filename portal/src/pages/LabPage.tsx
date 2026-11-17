@@ -12,7 +12,9 @@ const TABS = [
   ["history", "History"],
 ] as const;
 
-export default function LabPage({ ctx, labId, tab, query }: { ctx: Ctx; labId: string; tab: string; query: URLSearchParams }) {
+export default function LabPage({ ctx, labId, tab, query, publicView }: {
+  ctx: Ctx; labId: string; tab: string; query: URLSearchParams; publicView?: boolean;
+}) {
   const [lab, setLab] = useState<Lab | null>(null);
   const [error, setError] = useState("");
 
@@ -35,7 +37,11 @@ export default function LabPage({ ctx, labId, tab, query }: { ctx: Ctx; labId: s
     await load();
     await ctx.reloadLabs();
   };
-  if (lab.kind === "core") return <CorePage ctx={ctx} lab={lab} tab={tab} query={query} onChanged={reload} />;
+  if (lab.kind === "core") {
+    // From the BSR / Cores links everyone gets the public view; a core's own staff open the full
+    // view from "Your labs".
+    return <CorePage ctx={ctx} lab={lab} tab={tab} query={query} onChanged={reload} publicView={publicView || !lab.yours} />;
+  }
 
   return (
     <div className="page">

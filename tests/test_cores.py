@@ -77,7 +77,7 @@ def test_listing_labs_and_cores(seq):
 def test_only_staff_edit_and_suggestions_point_outsiders_to_the_core(seq):
     with pytest.raises(Forbidden, match="Sam Seq"):
         hubsvc.suggest_edit("ann", "seq", "Mention the 2 nM loading concentration")
-    with pytest.raises(NotFound):
+    with pytest.raises(Forbidden):
         editing.save_document("ann", "seq", "shared/protocols/submission.md", "x")
     with pytest.raises(NotFound):  # BSR doesn't get into another core's internal section either
         editing.read_document_file("bsrstaff", "seq", "internal/notes/instrument.md")
@@ -142,7 +142,12 @@ def test_templates_are_kept_by_bsr_until_the_core_joins(hub, monkeypatch):
     # Everyone sees the starter page; BSR may edit it until the core joins.
     ctx = hubsvc.lab_context("ann", "sequencing")["context"]
     assert "DNA and RNA sequencing" in ctx and "isn't on CodeSpringHub yet" in ctx
-    assert hubsvc.lab_context("bsrstaff", "sequencing")["internal_context"]
+    # BSR edits only the starter page's shared section; nobody gets an internal view of it.
+    assert "internal_context" not in hubsvc.lab_context("bsrstaff", "sequencing")
+    editing.save_document("bsrstaff", "sequencing", "shared/context.md", "# Sequencing\n\nSubmit via iLab.\n")
+    with pytest.raises(NotFound):
+        editing.save_document("bsrstaff", "sequencing", "internal/context.md", "x")
+    assert {r["lab_id"]: r for r in hubsvc.list_labs("bsrstaff")}["sequencing"]["role"] == "bsr"
     assert (seq.dir / "shared" / ".git").exists() and (seq.dir / "internal" / ".git").exists()
     cli.cmd_seed_cores(None)  # running again changes nothing
     # Onboarding: the core's own group takes over, and BSR is out of its internal section.
@@ -195,3 +200,20 @@ def test_gpfs_core_internal_is_staff_only_and_shared_is_readable_by_labs(monkeyp
         assert acl.core_problems(core, staff) == []
     finally:
         shutil.rmtree(gdir, ignore_errors=True)
+
+
+def test_every_labs_context_carries_a_guide_to_the_cores(seq):
+    from test_server import call
+    text = call("get_lab_context", as_user="ann", lab_id="lab-a")
+    assert "CSHL core facilities" in text and "Sequencing Core (seq)" in text
+    assert "doc:seq/shared/protocols/submission" in text and "doc:seq/internal" not in text
+    assert "doc:bsr/shared/guidance/codespring-pipelines" in text
+    # A core's own context lists the other cores, not itself.
+    own = hubsvc.lab_context("sam", "seq")
+    assert "seq" not in [c["core_id"] for c in own["cores"]] and "bsr" in [c["core_id"] for c in own["cores"]]
+
+
+def test_your_own_core_is_marked_yours(seq):
+    rows = {r["lab_id"]: r for r in hubsvc.list_labs("sam")}
+    assert rows["seq"]["yours"] and not rows["bsr"]["yours"]
+    assert {r["lab_id"]: r for r in hubsvc.list_labs("bsrstaff")}["bsr"]["yours"]

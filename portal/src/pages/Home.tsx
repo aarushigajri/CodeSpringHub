@@ -30,11 +30,11 @@ export default function Home({ ctx }: { ctx: Ctx }) {
       </div>
 
       <h2>Your labs</h2>
-      {ctx.labs.filter((l) => l.kind !== "core").length === 0 && (
+      {ctx.labs.filter((l) => l.kind !== "core" || l.yours).length === 0 && (
         <Empty title="You're not in any CodeSpringHub lab yet.">Ask BSR to add your lab to the pilot.</Empty>
       )}
       <div className="cards">
-        {ctx.labs.filter((l) => l.kind !== "core" || l.role === "staff" || l.role === "lead").map((l) => (
+        {ctx.labs.filter((l) => l.kind !== "core" || l.yours).map((l) => (
           <div key={l.lab_id} className="card">
             <h3>{l.name}</h3>
             <p className="muted">{l.description || "No description yet."}</p>
@@ -54,7 +54,7 @@ export default function Home({ ctx }: { ctx: Ctx }) {
       </div>
 
       <p className="muted">
-        Every CSHL core facility shares its protocols and guidelines here: open <a href="#/lab/bsr/shared">BSR</a> or
+        Every CSHL core facility shares its protocols and guidelines here: open <a href="#/core/bsr/shared">BSR</a> or
         the <strong>Cores</strong> list in the sidebar.
       </p>
 
