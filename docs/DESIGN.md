@@ -797,3 +797,28 @@ pipeline, who may use it through the Hub, in `knowledge/bsr/shared/pipelines.yam
   (`knowledge/support_contacts.yaml`), copy and reply-to the person, and is logged as a BSR review
   ticket (portal Inbox). It refuses other people's personal items and other cores' internal items;
   the usage log keeps only the purpose, never the draft text.
+
+---
+
+## 18. Bulk ATAC-seq and ChIP-seq from Claude (built 17 Nov 2026)
+
+The same plan -> confirm -> start, step-by-step, cancel, waves, emails, QC and report as RNA-seq
+(§13), for CodeSpringApp's ATAC-seq and ChIP-seq pipelines. CodeSpringApp `R/hub_peaks.R` checks,
+plans and runs them by calling the app's own functions; the run engine in `R/hub_bridge.R` now
+takes the pipeline from the request (`rnaseq`, `atac`, `chip`).
+
+| | ATAC-seq | ChIP-seq |
+|---|---|---|
+| Steps | Cutadapt, FastQC, Bowtie2, MACS2 Peaks, Differential Peaks (DiffBind) | Cutadapt, FastQC, Bowtie2, MACS2 Peaks (each target against its matched input), Differential Peaks (DiffBind on targets), Peak Annotation (HOMER) |
+| App defaults kept | Nextera adapters, MACS2 q 0.05, paired-end only | TruSeq adapters, MACS2 q 0.01, narrow peaks (broad on request) |
+| Design | sample, grouping columns, filename | plus `reference` (chip / input) and `control_sample` (each target's input row) |
+| QC | Bowtie2 mapped reads and % kept after deduplication, MACS2 peaks per sample (each tool's own summary files) | the same, with each sample's role |
+| Report | DiffBind's plots (PCA, correlation heatmaps, volcano, ...), its differential-peak table and counts (higher / lower by DiffBind's Fold), QC table | the same plus HOMER's annotation summary |
+
+- Claude asks only the app's own choices: run mode, email updates and, for ChIP, narrow or broad
+  peaks. The comparison, species and design come from the dataset. Pathway gene sets and RSEM /
+  Kallisto are refused for these pipelines.
+- Storage: the plan shows free space and raw read size, and says the output size hasn't been
+  measured for ATAC/ChIP yet (the RNA-seq estimate isn't reused).
+- BSR's public/internal setting (§16) applies per pipeline; both ship public.
+- Tested end to end on CodeSpringLab's example data (4 ATAC samples; 4 ChIP targets + 1 input).

@@ -38,10 +38,11 @@ from .permissions import resolve_asset
 
 PLAN_ID = re.compile(r"^plan-[a-f0-9]{16}$")
 PROJECT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")  # CodeSpringApp's own rule (HUB_NAME_RE)
-RUN_ID = re.compile(r"^rna/[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+RUN_ID = re.compile(r"^(rna|atac|chip)/[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 FINISHED = {"complete", "failed", "stopped", "cancelled"}
 ACTIVE = {"queued", "running", "cancelling"}  # "paused" waits for the person and holds no cluster resources
-QC_STEPS = ("Cutadapt", "FastQC", "STAR", "featureCounts", "Kallisto")
+QC_STEPS = ("Cutadapt", "FastQC", "STAR", "featureCounts", "Kallisto", "Bowtie2", "MACS2 Peaks")
+PEAK_PIPELINES = ("atac", "chip")  # bulk ATAC-seq and ChIP-seq, through the same plan -> confirm -> start
 SKIPPABLE = ("RSEM", "Kallisto", "GSEA")
 QUANTIFIERS = ("rsem", "kallisto")
 RUN_MODES = ("all", "step")
@@ -125,6 +126,8 @@ def catalog() -> dict:
             "batching": cat["rnaseq"].get("batching", {}),
             "limits": cat["rnaseq"]["limits"],
         },
+        "atac_options": cat.get("atac"),
+        "chip_options": cat.get("chip"),
     }
 
 
@@ -207,17 +210,32 @@ def _needs_new_runner(sets, quants, mode, email=False) -> bool:
 
 
 def plan_analysis(user, dataset_id, project_name, species, fastq_folder="", design=None, design_file="",
-                  paired_end=True, genome_version="", trim_adapters=True, adapter="Illumina Universal TruSeq RNA",
+                  paired_end=True, genome_version="", trim_adapters=True, adapter=None,
                   min_length=20, count_by="gene_name", compare=None, pathway_geneset=None, pathway_genesets=None,
-                  extra_quantification=None, run_mode="all", email_updates=False, email_every_hours=0) -> dict:
+                  extra_quantification=None, run_mode="all", email_updates=False, email_every_hours=0,
+                  pipeline="rnaseq", macs2_qvalue=None, peak_type=None, annotate=None) -> dict:
     _require_self(user)
-    pipelines.require(user, "rnaseq")  # BSR decides which pipelines labs may start themselves
+    pipeline = (pipeline or "rnaseq").strip().lower()
+    if pipeline not in ("rnaseq",) + PEAK_PIPELINES:
+        raise HubError("pipeline must be 'rnaseq', 'atac' or 'chip'. Other analyses run in CodeSpringApp "
+                       "(list_workflows), or ask BSR.")
+    pipelines.require(user, pipeline)  # BSR decides which pipelines labs may start themselves
+    peaks = pipeline in PEAK_PIPELINES
     project_name = (project_name or "").strip()
     if not PROJECT_NAME.match(project_name):
         raise HubError("That project name can't be used: it needs 1-64 letters, numbers, '.', '_' or '-', starting "
                        "with a letter or number. Ask the person to type another name; don't pick one for them.")
-    sets, quants, mode = _choices(pathway_geneset, pathway_genesets, extra_quantification, run_mode)
-    if _needs_new_runner(sets, quants, mode, bool(email_updates)) and _cli("catalog").get("spec_version", 1) < 2:
+    if peaks:
+        if pathway_geneset or pathway_genesets or extra_quantification:
+            raise HubError("Pathway gene sets and RSEM/Kallisto are RNA-seq options; ATAC-seq and ChIP-seq don't use them.")
+        sets, quants, mode = [], [], _choices(None, None, None, run_mode)[2]
+        runnable = {p["id"] for p in _cli("catalog")["pipelines"] if p.get("runnable_from_hub")}
+        if pipeline not in runnable:
+            raise HubError("Starting ATAC-seq or ChIP-seq from here needs a CodeSpringApp update that isn't installed "
+                           "yet. Run it in CodeSpringApp for now, or ask BSR to update the shared install.")
+    else:
+        sets, quants, mode = _choices(pathway_geneset, pathway_genesets, extra_quantification, run_mode)
+    if not peaks and _needs_new_runner(sets, quants, mode, bool(email_updates)) and _cli("catalog").get("spec_version", 1) < 2:
         raise HubError("Several gene sets, RSEM/Kallisto and one-step-at-a-time runs need a CodeSpringApp update that "
                        "isn't installed yet. Plan with one gene set, no extra quantification and run_mode 'all', "
                        "or ask BSR to update the shared install.")
@@ -235,14 +253,27 @@ def plan_analysis(user, dataset_id, project_name, species, fastq_folder="", desi
         else:
             raise HubError("No design given. Pass design rows, or design_file (a design_matrix.txt inside the dataset).")
     design_path = resolve_asset(ds, design_file) if not design else None
+    trim = {"enabled": bool(trim_adapters), "min_length": int(min_length)}
+    if adapter or not peaks:  # ATAC/ChIP: the app's own default adapters unless one is chosen
+        trim |= {"adapter_r1": adapter or "Illumina Universal TruSeq RNA", "adapter_r2": adapter or "Illumina Universal TruSeq RNA"}
     spec = {
-        "pipeline": "rnaseq", "project_name": project_name, "fastq_dirs": [str(fastq_dir)],
+        "pipeline": pipeline, "project_name": project_name, "fastq_dirs": [str(fastq_dir)],
         "paired_end": bool(paired_end), "species": species, "genome_version": genome_version or "",
-        "trim": {"enabled": bool(trim_adapters), "adapter_r1": adapter, "adapter_r2": adapter, "min_length": int(min_length)},
-        "feature": count_by,
+        "trim": trim,
         **_design_spec(Path(ds.path), design, design_path),
     }
-    if compare:
+    if peaks:
+        macs2 = {k: v for k, v in (("qvalue", macs2_qvalue), ("peak_type", peak_type)) if v not in (None, "")}
+        if macs2:
+            spec["macs2"] = macs2
+        if compare:
+            spec["diffbind"] = {"column": compare.get("column", ""), "reference": compare.get("reference", ""),
+                                "comparison": compare.get("comparison", "")}
+        if annotate is not None:
+            spec["annotate"] = bool(annotate)
+    else:
+        spec["feature"] = count_by
+    if compare and not peaks:
         spec["deseq2"] = {"column": compare.get("column", ""), "reference": compare.get("reference", ""),
                           "comparison": compare.get("comparison", "")}
     if len(sets) == 1:
@@ -267,8 +298,14 @@ def plan_analysis(user, dataset_id, project_name, species, fastq_folder="", desi
     plan.pop("codespringlab", None)
     plan["input"] = {"dataset": dataset_id, "folder": fastq_folder or "(whole dataset)"}
     results_dir = Path(plan.get("results_dir") or storage.results_root())
-    plan["storage"] = _input_storage(fastq_dir, _design_filenames(design, design_path), bool(trim_adapters),
-                                     results_dir)
+    if peaks:  # free space and raw size; the RNA-seq output estimate doesn't apply, so none is given
+        plan["storage"] = storage.report(where=results_dir)
+        raw, n = storage.raw_fastq_bytes(fastq_dir, _design_filenames(design, design_path))
+        if n:
+            plan["storage"]["raw_input"] = {"fastq_files": n, "size": storage.human(raw)}
+    else:
+        plan["storage"] = _input_storage(fastq_dir, _design_filenames(design, design_path), bool(trim_adapters),
+                                         results_dir)
 
     plan_id = f"plan-{secrets.token_hex(8)}"
     record = {"plan_id": plan_id, "user": user, "created": time.time(), "dataset_id": dataset_id, "lab_id": ds.lab_id,
@@ -277,12 +314,14 @@ def plan_analysis(user, dataset_id, project_name, species, fastq_folder="", desi
     path = _runs_dir() / f"{plan_id}.json"
     path.write_text(json.dumps(record, indent=2))
     os.chmod(path, 0o600)
-    verdict = plan["storage"].get("verdict", "")
+    verdict = plan["storage"].get("verdict", "enough")
     return {
         "plan_id": plan_id,
         "expires_in_minutes": config.RUN_PLAN_TTL_SECONDS // 60,
-        "preview": agent.rnaseq_preview(plan, dataset_id, species, compare, sets, quants, mode,
-                                        email=plan.get("notify") if email_updates else None),
+        "preview": (agent.peaks_preview(plan, dataset_id, species, compare, pipeline, mode,
+                                        email=plan.get("notify") if email_updates else None) if peaks else
+                    agent.rnaseq_preview(plan, dataset_id, species, compare, sets, quants, mode,
+                                         email=plan.get("notify") if email_updates else None)),
         "final_prompt": agent.FINAL_PROMPT,
         "plan": plan,
         "next": ("Make the preview your final message this turn: any other tool calls (including a closing "

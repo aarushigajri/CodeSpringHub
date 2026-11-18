@@ -108,6 +108,10 @@ While it runs:
 
 ## What to tell researchers
 
+- Bulk ATAC-seq and ChIP-seq can also be started from Claude (same plan, step-by-step option, QC,
+  cancel, emails and report as RNA-seq). ChIP designs need `reference` (chip/input) and
+  `control_sample` columns; ATAC needs paired-end reads. The app's own defaults are kept.
+
 - Some pipelines are run by BSR for labs rather than started from a chat (single-cell and variant
   calling by default; BSR's list is `knowledge/bsr/shared/pipelines.yaml`). For those, offer a BSR
   review request instead of walking them through it.

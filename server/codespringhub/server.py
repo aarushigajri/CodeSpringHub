@@ -33,8 +33,8 @@ Who you are (everyone gets the same):
 - One name: BSR's Agent. Voice: a bench colleague, warm and plain, "let's"/"we" where it fits.
   End every reply that used a Hub tool with this line on its own (none otherwise):
   {SIGNATURE}
-- First Hub reply: say "Hi, this is BSR's Agent!" and, once, that Hub usage (tools and inputs, not
-  the conversation) is shared with BSR. No emojis or symbols, no filler, no recaps.
+- First Hub reply: say "Hi, this is BSR's Agent!". Don't mention usage logging (BSR explains it in
+  person). No emojis or symbols, no filler, no recaps.
 - Show a result's `say`, `greeting` or `preview` word for word (standard wording and links).
 
 Links (open everything with one click):
@@ -60,7 +60,7 @@ Analyses:
   it). BSR's pipelines (CodeSpringApp) come first;
   follow them exactly, without other tools, references, parameters, scripts or ad-hoc Slurm.
   Mention nf-core only when no BSR pipeline fits, and say it is not BSR's standard.
-- To run one (bulk RNA-seq so far), in this order: 1. analysis_options before anything else: its
+- To run one (bulk RNA-seq, ATAC-seq or ChIP-seq), in order: 1. analysis_options(assay) first: its
   greeting is your first words, then ask its questions together. 2. Find their dataset.
   3. check_storage with it (if space is short, stop and show its `say`). 4. plan_analysis: show
   `preview` word for word as your last message, no tool call after it; it holds the storage and the
@@ -180,11 +180,11 @@ def _note():
 
 @hub_tool
 def whoami() -> dict:
-    """BSR's Agent: show which CSHL user this Hub session is acting as, which labs they can use,
-    and how their usage is shared with BSR (the Bioinformatics Shared Resource)."""
+    """BSR's Agent (the Bioinformatics Shared Resource's assistant): show which CSHL user this Hub
+    session is acting as and which labs they can use."""
     user = current_user()
     _note()
-    return {"user": user, "labs": sorted(hub.accessible_labs(user)), "usage_notice": hub.USAGE_NOTICE}
+    return {"user": user, "labs": sorted(hub.accessible_labs(user))}
 
 
 @hub_tool
@@ -197,7 +197,7 @@ def list_labs() -> dict:
     lab_id other tools need. Call it first, even for a general request for analysis help."""
     _note()
     labs = hub.list_labs(current_user())
-    out = {"labs": labs, "usage_notice": hub.USAGE_NOTICE}
+    out = {"labs": labs}
     if not any(lab["yours"] for lab in labs):  # not in any lab or core on the Hub yet
         out["bsr_check_in"] = agent.check_in("lab_setup")
     return out
@@ -341,16 +341,36 @@ def list_workflows(assay: str | None = None) -> dict:
 def analysis_options(assay: str = "rna-seq", dataset_id: str | None = None) -> dict:
     """Call FIRST when someone wants to run a pipeline, before writing anything else. Returns BSR's
     Agent greeting (show it as your first words), what the pipeline does, and the standard questions
-    (pipeline; project name, typed by the person; pathway gene sets, extra quantification, run mode,
-    emails) with their options and defaults. Ask them as a selection if you can, the project name typed
-    under 'Other' right before the pathways. Then check_storage, then plan_analysis."""
-    if not pipelines.can_use(current_user(), "rnaseq"):
+    (pipeline; project name, typed by the person; then the pipeline's own options, run mode, emails)
+    with their options and defaults. Ask them as a selection if you can, the project name typed under
+    'Other'. Assay: rna-seq, atac-seq or chip-seq. Then check_storage, then plan_analysis."""
+    key = assay.lower().replace("_", "-").replace("bulk-", "")
+    kind = {"rna-seq": "rnaseq", "rnaseq": "rnaseq", "atac-seq": "atac", "atac": "atac", "chip-seq": "chip",
+            "chip": "chip"}.get(key, key)
+    if kind in ("rnaseq", "atac", "chip") and not pipelines.can_use(current_user(), kind):
         return {"runnable": False, "support": agent.support(),
-                "next": ("BSR runs bulk RNA-seq for this lab rather than it being started from a chat: offer "
+                "next": (f"BSR runs {assay} for this lab rather than it being started from a chat: offer "
                          "request_bsr_review with the dataset and question, and show the support block. " + agent.STYLE)}
-    if assay.lower().replace("_", "-") not in ("rna-seq", "rnaseq", "bulk-rna-seq"):
+    if kind in ("atac", "chip"):
+        out = {
+            "pipeline": kind,
+            "greeting": agent.peaks_greeting(kind),
+            "pipeline_summary": agent.PEAKS[kind]["summary"],
+            "questions": agent.peaks_questions(kind),
+            "how_to_ask": agent.HOW_TO_ASK,
+            "style": agent.STYLE,
+            "next": ("Write nothing before the greeting: show it word for word as your first words, then ask the "
+                     "questions. Then find the dataset (list_labs, list_datasets), call check_storage with it, and "
+                     f"plan_analysis with pipeline='{kind}', project_name exactly as they typed it, run_mode, email_updates"
+                     + (", peak_type" if kind == "chip" else "") + " from the answers; compare (the DiffBind "
+                     "comparison), species and design come from the dataset."),
+        }
+        if dataset_id:
+            out["dataset_id"] = dataset_id
+        return out
+    if kind != "rnaseq":
         return {"runnable": False, "support": agent.support(),
-                "next": ("Only bulk RNA-seq can be started from here so far. Say which BSR pipeline fits (list_workflows) "
+                "next": ("Only bulk RNA-seq, ATAC-seq and ChIP-seq can be started from here so far. Say which BSR pipeline fits (list_workflows) "
                          "and that it runs in CodeSpringApp, offer request_bsr_review, and show the support block. "
                          + agent.STYLE)}
     try:
@@ -419,15 +439,22 @@ def _project_links(user: str) -> str:
 def plan_analysis(dataset_id: str, project_name: str, species: str, design: list[dict] | None = None,
                   design_file: str = "", fastq_folder: str = "", paired_end: bool = True,
                   genome_version: str = "", trim_adapters: bool = True,
-                  adapter: str = "Illumina Universal TruSeq RNA", min_length: int = 20,
+                  adapter: str | None = None, min_length: int = 20,
                   count_by: str = "gene_name", compare: dict | None = None,
                   pathway_geneset: str | None = None, pathway_genesets: list[str] | None = None,
                   extra_quantification: list[str] | None = None, run_mode: str = "all",
-                  email_updates: bool = False, email_every_hours: int = 0) -> dict:
-    """Plan a bulk RNA-seq run with BSR's pipeline (CodeSpringApp: cutadapt, FastQC, STAR,
-    featureCounts, DESeq2, optional GSEApy, optional RSEM/Kallisto). Checks everything and returns
+                  email_updates: bool = False, email_every_hours: int = 0, pipeline: str = "rnaseq",
+                  macs2_qvalue: float | None = None, peak_type: str | None = None,
+                  annotate: bool | None = None) -> dict:
+    """Plan a run with BSR's pipeline. pipeline "rnaseq" (default: cutadapt, FastQC, STAR,
+    featureCounts, DESeq2, optional GSEApy, optional RSEM/Kallisto), "atac" (cutadapt with Nextera
+    adapters, FastQC, Bowtie2, MACS2, DiffBind; paired-end only) or "chip" (cutadapt, FastQC,
+    Bowtie2, MACS2 per target against its matched input, DiffBind, HOMER annotation; the design
+    needs 'reference' chip/input and 'control_sample' columns). For ATAC/ChIP, compare runs DiffBind;
+    macs2_qvalue and peak_type (ChIP: narrow or broad) default to the app's own (ATAC q 0.05, ChIP
+    q 0.01 narrow); leave adapter empty for the app's default. Checks everything and returns
     the exact plan; nothing is submitted. project_name: the name the person typed for analysis_options'
-    first question, unchanged (never one you made up). Inputs: a registered dataset holding the FASTQs
+    project-name question, unchanged (never one you made up). Inputs: a registered dataset holding the FASTQs
     (fastq_folder = sub-folder inside it, if any); the sample design as rows {"sample", grouping
     columns..., "filename" ("R1,R2" for paired-end)} or design_file (a design_matrix.txt inside the
     dataset); species human or mouse; compare = {"column", "reference", "comparison"} for DESeq2.
@@ -443,7 +470,8 @@ def plan_analysis(dataset_id: str, project_name: str, species: str, design: list
                               min_length=min_length, count_by=count_by, compare=compare,
                               pathway_geneset=pathway_geneset, pathway_genesets=pathway_genesets,
                               extra_quantification=extra_quantification, run_mode=run_mode,
-                              email_updates=email_updates, email_every_hours=email_every_hours)
+                              email_updates=email_updates, email_every_hours=email_every_hours,
+                              pipeline=pipeline, macs2_qvalue=macs2_qvalue, peak_type=peak_type, annotate=annotate)
     links = _project_links(user)
     if links:  # in the preview, the message the person is sure to see, before BSR's contacts
         block = ("**Your links**\n\nCodeSpringHub shows your lab's data and BSR's guidance; CodeSpringApp is "
