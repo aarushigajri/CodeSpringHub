@@ -36,6 +36,11 @@ def call(tool, as_user=None, **args):
 LIST_TOOLS = {"search_knowledge", "list_datasets"}
 
 
+def srv_instructions():
+    from codespringhub.server import INSTRUCTIONS
+    return INSTRUCTIONS
+
+
 def labs_of(user):
     return sorted(lab["lab_id"] for lab in call("list_labs", as_user=user)["labs"])
 
@@ -49,7 +54,8 @@ def test_labs_visible_by_membership_and_bsr_supports_all():
     assert rows["bsr"]["kind"] == "core" and rows["bsr"]["sees"] == "shared" and not rows["bsr"]["can_edit"]
     assert {r["lab_id"]: r for r in call("list_labs", as_user="bsrstaff")["labs"]}["bsr"]["sees"] == "shared and internal"
     assert "error" in call("get_lab_context", as_user="ann", lab_id="lab-b")
-    assert "usage" in call("list_labs", as_user="ann")["usage_notice"]
+    assert "usage_notice" not in call("list_labs", as_user="ann")  # BSR explains logging in person, not in the chat
+    assert "usage" not in srv_instructions().lower() or "Don't mention usage logging" in srv_instructions()
 
 
 def test_context_edit_is_live_immediately(hub):

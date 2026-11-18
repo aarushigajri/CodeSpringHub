@@ -158,6 +158,8 @@ FEATURED_GENESETS = {
 STEP_WORDS = {
     "Cutadapt": "trimming", "FastQC": "quality check", "STAR": "alignment", "featureCounts": "gene counts",
     "DESeq2": "differential expression", "GSEA": "pathways", "RSEM": "RSEM", "Kallisto": "Kallisto",
+    "Bowtie2": "alignment", "MACS2 Peaks": "peak calling", "Differential Peaks": "differential peaks",
+    "Peak Annotation": "peak annotation",
 }
 
 _DEFAULT_SUPPORT = {
@@ -282,6 +284,10 @@ def _storage_cell(plan: dict) -> str:
     st = plan.get("storage") or {}
     if not st:
         return "Couldn't be checked for this run"
+    if not st.get("rnaseq_estimate"):  # ATAC/ChIP: output size not measured yet; say so rather than guess
+        raw = (st.get("raw_input") or {}).get("size")
+        return (f"{st.get('free', '?')} free" + (f"; raw reads {raw}" if raw else "")
+                + ". Output size for this pipeline hasn't been measured yet; ask BSR for a large study.")
     est, verdict = st.get("rnaseq_estimate") or {}, st.get("verdict", "")
     text = f"Needs about {est.get('typical', '?')} ({est.get('range', '?')}); {st.get('free', '?')} free."
     if verdict.startswith("not enough"):
@@ -455,3 +461,80 @@ def check_in(reason: str) -> dict:
                 "question tool or a separate message. If they say yes, call email_bsr (purpose 'question', "
                 "'lab_setup' or 'meeting'), with a short summary of this conversation if they want one."),
     }
+
+
+# ---- ATAC-seq and ChIP-seq ---------------------------------------------------------------------
+
+PEAKS = {
+    "atac": {"name": "ATAC-seq", "summary": (
+        "BSR's ATAC-seq pipeline trims Nextera adapters, checks read quality, aligns the reads with Bowtie2 and "
+        "removes duplicates, calls open-chromatin peaks with MACS2, then compares your groups with DiffBind. You can "
+        "browse everything afterwards in CodeSpringApp's ATAC Results Explorer.")},
+    "chip": {"name": "ChIP-seq", "summary": (
+        "BSR's ChIP-seq pipeline trims adapters, checks read quality, aligns with Bowtie2 and removes duplicates, "
+        "calls peaks for each target against its matched input with MACS2, compares your groups with DiffBind, and "
+        "annotates peaks to nearby genes with HOMER. You can browse everything afterwards in CodeSpringApp.")},
+}
+
+
+def peaks_greeting(kind: str) -> str:
+    return (f"Hi, this is {NAME}! Let's take a look at your data. I'll help you run the Bioinformatics Shared "
+            f"Resource's {PEAKS[kind]['name']} pipeline on it.\n\n" + ABOUT + "\n\nFirst, a few quick questions. "
+            "Nothing runs until you've seen the full plan and said go.")
+
+
+def peaks_questions(kind: str) -> list[dict]:
+    """The same few questions every time, using only the app's own options."""
+    qs = rnaseq_questions()
+    keep = [q for q in qs if q["id"] in ("run_mode", "email_updates")]
+    words = "this ATAC-seq project" if kind == "atac" else "this ChIP-seq project"
+    if kind == "chip":
+        keep.insert(0, {"id": "peak_type", "header": "Peaks", "multi_select": False,
+                        "question": "What kind of peaks do you expect?",
+                        "options": [
+                            {"label": "Narrow (Recommended)", "value": "narrow",
+                             "description": "Transcription factors and sharp histone marks (H3K4me3, H3K27ac)."},
+                            {"label": "Broad", "value": "broad",
+                             "description": "Spread-out marks such as H3K27me3, H3K36me3 or H3K9me3."}],
+                        "default": "narrow"})
+    return [project_name_question(words)] + keep
+
+
+def peaks_preview(plan: dict, dataset_id: str, species: str, compare: dict | None, kind: str, run_mode: str,
+                  email: dict | None = None) -> str:
+    """The ATAC/ChIP plan, in the same layout as the RNA-seq one."""
+    n = len(plan.get("samples") or [])
+    roles = plan.get("roles") or {}
+    what = f"{n} {species} samples" + (f" ({roles.get('chip', 0)} targets, {roles.get('input', 0)} inputs)" if roles else "")
+    if compare:
+        what = f"{compare.get('comparison')} vs {compare.get('reference')} across {what}"
+    mode = "one step at a time, pausing for you after each" if run_mode == "step" else "all steps at once"
+    if isinstance(email, dict):
+        every = email.get("every_hours") or 0
+        emails = "As each step finishes" + (f", plus a summary every {every} h" if every else "")
+    else:
+        emails = "None"
+    macs2 = next((s.get("what", "") for s in plan.get("steps") or [] if s.get("step") == "MACS2 Peaks"), "")
+    rows = [
+        ("Pipeline", f"CodeSpringApp, BSR's standard {PEAKS[kind]['name']} pipeline"),
+        ("Data", f"`{dataset_id}`, {n} samples" + (f", {plan['input']['folder']}" if (plan.get('input') or {}).get('folder') else "")),
+    ]
+    if compare:
+        rows.append(("Comparison", f"{compare.get('comparison')} vs {compare.get('reference')} (reference), "
+                                   f"column '{compare.get('column')}' (DiffBind)"))
+    else:
+        rows.append(("Comparison", "None (peaks only, no DiffBind)"))
+    rows += [
+        ("Reference genome", plan.get("reference") or "?"),
+        ("Peak calling", macs2 or "MACS2"),
+        ("Run mode", "One step at a time" if run_mode == "step" else "All steps at once"),
+        ("Email updates", emails),
+        ("Results folder", f"`{plan.get('results_dir', '')}`"),
+        ("Storage", _storage_cell(plan)),
+    ]
+    settings = "| Setting | Choice |\n|---|---|\n" + "\n".join(f"| {k} | {v} |" for k, v in rows)
+    help_line = ("Questions at any point? Reach BSR: "
+                 + _join_words([f"{c['name']} ({c['email']})" for c in support()["contacts"]], "or") + ".")
+    lead = f"We'll compare {what}" if compare else f"We'll call peaks in {what}"
+    return (f"**{NAME}: your {PEAKS[kind]['name']} plan is ready.** {lead}, running {mode} under your "
+            f"account.\n\n{settings}\n\n**Steps**\n\n{_steps_table(plan.get('steps') or [], [])}\n\n{help_line}")

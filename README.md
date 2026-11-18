@@ -158,7 +158,7 @@ npx @modelcontextprotocol/inspector ./env/bin/codespringhub
 | `read_code_file` | Full source of a script/notebook/pipeline in a registered **code** resource |
 | `query_table` | One read-only SQL SELECT on a table file, max 50 rows, no other file access |
 | `list_workflows` | How BSR runs analyses: CodeSpringApp/CodeSpringLab pipelines first, nf-core as secondary |
-| `plan_analysis`, `start_analysis` | Plan a bulk RNA-seq run with BSR's pipeline, show it, start it only after the user confirms |
+| `plan_analysis`, `start_analysis` | Plan a bulk RNA-seq, ATAC-seq or ChIP-seq run with BSR's pipeline, show it, start it only after the user confirms |
 | `analysis_status`, `analysis_qc`, `list_analyses` | Follow runs you started from the Hub: step and job progress, per-sample QC |
 | `continue_analysis`, `cancel_analysis`, `resume_analysis` | Go on after a pause (adding or skipping optional steps), stop a run, or restart one |
 | `analysis_report` | The post-run packet: one HTML page with the app's plots, QC, DEG lists and methods; plots shown in the chat, one-time download link |

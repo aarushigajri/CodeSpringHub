@@ -34,13 +34,15 @@ def out(x, code=0):
     print(json.dumps(x)); sys.exit(code)
 if cmd == "catalog":
     version = int((here / "spec_version").read_text()) if (here / "spec_version").exists() else 1
-    out({{"ok": True, "spec_version": version, "pipelines": [{{"id": "rnaseq", "runnable_from_hub": True}}, {{"id": "atac", "runnable_from_hub": False}}],
+    peaks_ok = (here / "peaks_runnable").exists()
+    out({{"ok": True, "spec_version": version, "pipelines": [{{"id": "rnaseq", "runnable_from_hub": True}}, {{"id": "atac", "runnable_from_hub": peaks_ok}}, {{"id": "chip", "runnable_from_hub": peaks_ok}}],
          "rnaseq": {{"references": [], "default_reference": {{}}, "adapters_r1": {{"Illumina Universal TruSeq RNA": "AGATC"}},
                     "features": ["gene_name"], "gsea_genesets": ["MSigDB_Hallmark_2020"], "limits": {{}}}}}})
 if cmd in ("check", "start"):
     if spec["project_name"] == "taken":
         out({{"ok": False, "errors": ["A results folder for 'taken' already exists."]}}, 2)
-    plan = {{"pipeline": "rnaseq", "project_id": "rna/" + spec["project_name"], "results_dir": "/r/" + spec["project_name"],
+    kind = spec.get("pipeline", "rnaseq")
+    plan = {{"pipeline": kind, "project_id": {{"rnaseq": "rna"}}.get(kind, kind) + "/" + spec["project_name"], "results_dir": "/r/" + spec["project_name"],
             "steps": [{{"step": "STAR"}}, {{"step": "DESeq2"}}] + ([{{"step": "GSEA"}}] if spec.get("gsea") else []),
             "samples": ["c1", "c2"], "groups": {{"group": {{"x": 1, "y": 1}}}}, "reference": "Mouse GRCm39",
             "codespringapp": "/x", "codespringlab": "/y"}}
@@ -262,7 +264,7 @@ def test_list_workflows_puts_bsr_pipelines_first_and_nfcore_second(suite):
     from conftest import REPO  # noqa: F401
     from test_server import call
     out = call("list_workflows")
-    assert [p["id"] for p in out["bsr_pipelines"]] == ["rnaseq", "atac"]
+    assert [p["id"] for p in out["bsr_pipelines"]] == ["rnaseq", "atac", "chip"]
     assert out["secondary_nfcore"] and all(w["id"].startswith("nf-core") for w in out["secondary_nfcore"])
     assert "secondary" in out["rule"]
 
